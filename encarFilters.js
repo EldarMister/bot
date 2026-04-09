@@ -56,9 +56,9 @@ export const BRAND_PRESETS = Object.freeze([
   { key: 'hyundai', label: 'Hyundai', button: '🇰🇷 Hyundai', manufacturerTokens: ['현대'], scope: PARSE_SCOPE_DOMESTIC, signals: ['hyundai', 'hyeondae', '현대'] },
   { key: 'kia', label: 'Kia', button: '🇰🇷 Kia', manufacturerTokens: ['기아'], scope: PARSE_SCOPE_DOMESTIC, signals: ['kia', 'gia', '기아'] },
   { key: 'genesis', label: 'Genesis', button: '🇰🇷 Genesis', manufacturerTokens: ['제네시스'], scope: PARSE_SCOPE_DOMESTIC, signals: ['genesis', 'jenesiseu', '제네시스'] },
-  { key: 'chevrolet', label: 'Chevrolet', button: '🇰🇷 Chevrolet', manufacturerTokens: ['쉐보레'], scope: PARSE_SCOPE_DOMESTIC, signals: ['chevrolet', '쉐보레'] },
-  { key: 'renault-samsung', label: 'Renault Samsung', button: '🇰🇷 Renault Samsung', manufacturerTokens: ['르노코리아', '르노삼성'], scope: PARSE_SCOPE_DOMESTIC, signals: ['renault', 'renaultsamsung', 'renaultkorea', 'reunokoria', '르노코리아', '르노삼성', 'samsung', 'samseong'] },
-  { key: 'kg-mobility', label: 'KG Mobility', button: '🇰🇷 KG Mobility', manufacturerTokens: ['KG모빌리티', '쌍용'], scope: PARSE_SCOPE_DOMESTIC, signals: ['kgmobility', 'kgmobilriti', '쌍용', 'ssangyong'] },
+  { key: 'chevrolet', label: 'Chevrolet', button: '🇰🇷 Chevrolet', manufacturerTokens: ['쉐보레(GM대우)', '쉐보레'], scope: PARSE_SCOPE_DOMESTIC, signals: ['chevrolet', '쉐보레'] },
+  { key: 'renault-samsung', label: 'Renault Samsung', button: '🇰🇷 Renault Samsung', manufacturerTokens: ['르노코리아(삼성)', '르노코리아', '르노삼성'], scope: PARSE_SCOPE_DOMESTIC, signals: ['renault', 'renaultsamsung', 'renaultkorea', 'reunokoria', '르노코리아', '르노삼성', 'samsung', 'samseong'] },
+  { key: 'kg-mobility', label: 'KG Mobility', button: '🇰🇷 KG Mobility', manufacturerTokens: ['KG모빌리티(쌍용)', 'KG모빌리티', '쌍용'], scope: PARSE_SCOPE_DOMESTIC, signals: ['kgmobility', 'kgmobilriti', '쌍용', 'ssangyong'] },
   { key: 'toyota', label: 'Toyota', button: '🇯🇵 Toyota', manufacturerTokens: ['도요타'], scope: PARSE_SCOPE_IMPORTED, signals: ['toyota', '도요타'] },
   { key: 'lexus', label: 'Lexus', button: '🇯🇵 Lexus', manufacturerTokens: ['렉서스'], scope: PARSE_SCOPE_IMPORTED, signals: ['lexus', '렉서스'] },
   { key: 'honda', label: 'Honda', button: '🇯🇵 Honda', manufacturerTokens: ['혼다'], scope: PARSE_SCOPE_IMPORTED, signals: ['honda', '혼다'] },
@@ -126,13 +126,30 @@ function buildRangeMarker(year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH
   return `${normalizedYear}${String(normalizedMonth || 0).padStart(2, '0')}`
 }
 
-function wrapYearScopedQuery(scopePrefix, manufacturerTokens = [], year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
-  const manufacturerOr = buildManufacturerOrQuery(manufacturerTokens)
+function buildMinimumRangeClause(year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
   const rangeStart = buildRangeMarker(year, month)
+  return rangeStart ? `Year.range(${rangeStart}..).` : ''
+}
+
+function buildExactSelectionRangeClause(year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
+  const normalizedYear = normalizeBrandYear(year, 0)
+  if (!normalizedYear) return ''
+
+  const normalizedMonth = normalizeBrandMonth(month, 0)
+  if (normalizedMonth) {
+    const marker = `${normalizedYear}${String(normalizedMonth).padStart(2, '0')}`
+    return `Year.range(${marker}..${marker}).`
+  }
+
+  return `Year.range(${normalizedYear}01..${normalizedYear}12).`
+}
+
+function buildScopedQuery(scopePrefix, manufacturerTokens = [], rangeClause = '') {
+  const manufacturerOr = buildManufacturerOrQuery(manufacturerTokens)
   const clauses = []
 
-  if (rangeStart) {
-    clauses.push(`Year.range(${rangeStart}..).`)
+  if (rangeClause) {
+    clauses.push(rangeClause)
   }
 
   if (manufacturerOr) {
@@ -152,29 +169,26 @@ function buildScopeListQuery(parseScope = PARSE_SCOPE_ALL) {
   const normalizedScope = normalizeParseScope(parseScope)
   if (normalizedScope === PARSE_SCOPE_DOMESTIC) return '(And.Hidden.N._.CarType.Y._.Year.range(201900..).)'
   if (normalizedScope === PARSE_SCOPE_IMPORTED) return '(And.Hidden.N._.CarType.N._.Year.range(201900..).)'
-  if (normalizedScope === PARSE_SCOPE_JAPANESE) return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', JAPANESE_MANUFACTURER_TOKENS, 2019, 1)
-  if (normalizedScope === PARSE_SCOPE_GERMAN) return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', GERMAN_MANUFACTURER_TOKENS, 2019, 1)
+  if (normalizedScope === PARSE_SCOPE_JAPANESE) return buildScopedQuery('(And.Hidden.N._.CarType.N._', JAPANESE_MANUFACTURER_TOKENS, buildMinimumRangeClause(2019, 1))
+  if (normalizedScope === PARSE_SCOPE_GERMAN) return buildScopedQuery('(And.Hidden.N._.CarType.N._', GERMAN_MANUFACTURER_TOKENS, buildMinimumRangeClause(2019, 1))
   return '(And.Hidden.N._.Year.range(201900..).)'
 }
 
 function buildBrandListQuery(brandKey = '', year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
   const preset = getBrandPreset(brandKey)
   if (!preset) return buildScopeListQuery(PARSE_SCOPE_ALL)
-  const normalizedYear = normalizeBrandYear(year, 0)
-
-  if (!normalizedYear) {
-    return buildScopeListQuery(preset.scope)
-  }
+  const rangeClause = buildExactSelectionRangeClause(year, month)
+  const manufacturerTokens = Array.isArray(preset.manufacturerTokens) ? preset.manufacturerTokens : []
 
   if (preset.scope === PARSE_SCOPE_DOMESTIC) {
-    return wrapYearScopedQuery('(And.Hidden.N._.CarType.Y._', [], year, month)
+    return buildScopedQuery('(And.Hidden.N._.CarType.Y._', manufacturerTokens, rangeClause)
   }
 
   if (preset.scope === PARSE_SCOPE_IMPORTED) {
-    return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', [], year, month)
+    return buildScopedQuery('(And.Hidden.N._.CarType.N._', manufacturerTokens, rangeClause)
   }
 
-  return wrapYearScopedQuery('(And.Hidden.N._', [], year, month)
+  return buildScopedQuery('(And.Hidden.N._', manufacturerTokens, rangeClause)
 }
 
 function hashText(value) {
