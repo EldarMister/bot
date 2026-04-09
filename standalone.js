@@ -74,6 +74,10 @@ function normalizeMessageId(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
+function isPersistentControlSection(section = '') {
+  return section === KEYBOARD_SECTION_MAIN || section === KEYBOARD_SECTION_FILTERS
+}
+
 function getSessionBrandSelections(session = {}) {
   return normalizeBrandSelections(session?.brandSelections, session?.brandKey)
 }
@@ -166,7 +170,7 @@ function getMonthButtonLabel(month, session = {}) {
   const baseLabel = String(normalizedMonth).padStart(2, '0')
   const isSelected = getPendingBrandMonthSelections(session)
     .some((selection) => Number(selection?.month) === normalizedMonth)
-  return isSelected ? `вњ… ${baseLabel}` : baseLabel
+  return isSelected ? `✅ ${baseLabel}` : baseLabel
 }
 
 function formatInteger(value) {
@@ -361,10 +365,10 @@ function buildPendingBrandMonthsText(session) {
     .map((selection) => String(selection.month).padStart(2, '0'))
 
   return [
-    `рџ—“пёЏ Р’С‹Р±РµСЂРёС‚Рµ РјРµСЃСЏС† РґР»СЏ ${preset?.label || 'РјР°СЂРєРё'}.`,
-    `Р“РѕРґ: ${session?.pendingBrandYear || '-'}.`,
-    'РњРѕР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ РЅРµСЃРєРѕР»СЊРєРѕ РјРµСЃСЏС†РµРІ.',
-    ...(selectedMonths.length ? ['', `РЈР¶Рµ РІС‹Р±СЂР°РЅРѕ: ${selectedMonths.join(', ')}.`] : []),
+    `🗓️ Выберите месяц для ${preset?.label || 'марки'}.`,
+    `Год: ${session?.pendingBrandYear || '-'}.`,
+    'Можно выбрать несколько месяцев.',
+    ...(selectedMonths.length ? ['', `Уже выбрано: ${selectedMonths.join(', ')}.`] : []),
   ].join('\n')
 }
 
@@ -500,12 +504,19 @@ export async function startStandaloneTelegramFreshBot() {
 
   async function sendControlMessage(chatId, text, session, section = KEYBOARD_SECTION_MAIN, { deleteMessageIds = [] } = {}) {
     const keyboard = buildControlKeyboard(session, section)
-    const existingMessageId = normalizeMessageId(session?.lastControlMessageId)
+    const existingTransientMessageId = normalizeMessageId(session?.lastControlMessageId)
+    const existingMainMessageId = normalizeMessageId(session?.lastMainMessageId)
+    const existingFiltersMessageId = normalizeMessageId(session?.lastFiltersMessageId)
     const controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
     const nextMessageId = normalizeMessageId(controlMessage?.message_id)
+    const persistentMessageId = section === KEYBOARD_SECTION_MAIN
+      ? existingMainMessageId
+      : section === KEYBOARD_SECTION_FILTERS
+        ? existingFiltersMessageId
+        : 0
     const messageIdsToDelete = Array.from(
       new Set(
-        [existingMessageId, ...deleteMessageIds]
+        [existingTransientMessageId, persistentMessageId, ...deleteMessageIds]
           .map((value) => normalizeMessageId(value))
           .filter((value) => value && value !== nextMessageId),
       ),
@@ -518,7 +529,9 @@ export async function startStandaloneTelegramFreshBot() {
     }
 
     const nextSession = stateStore.upsertSession(chatId, {
-      lastControlMessageId: nextMessageId,
+      lastControlMessageId: isPersistentControlSection(section) ? 0 : nextMessageId,
+      lastMainMessageId: section === KEYBOARD_SECTION_MAIN ? nextMessageId : existingMainMessageId,
+      lastFiltersMessageId: section === KEYBOARD_SECTION_FILTERS ? nextMessageId : existingFiltersMessageId,
       currentSection: section,
     })
     await stateStore.flush()
