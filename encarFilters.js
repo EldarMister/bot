@@ -8,7 +8,7 @@ export const FILTER_MODE_SCOPE = 'scope'
 export const FILTER_MODE_BRAND = 'brand'
 export const FILTER_MODE_CUSTOM = 'custom'
 
-export const BRAND_FILTER_MIN_YEAR = 2000
+export const BRAND_FILTER_MIN_YEAR = 2010
 export const BRAND_FILTER_MAX_YEAR = 2026
 
 export const YEAR_OPTIONS = Object.freeze(
@@ -461,8 +461,8 @@ export function getBrandSelectionLabel(selection = {}) {
   const baseLabel = preset?.label || selection?.brandKey || 'Марка'
 
   if (!year) return baseLabel
-  if (!month) return `${baseLabel} с ${year}`
-  return `${baseLabel} с ${month.toString().padStart(2, '0')}.${year}`
+  if (!month) return `${baseLabel} ${year}`
+  return `${baseLabel} ${month.toString().padStart(2, '0')}.${year}`
 }
 
 export function getCustomFilterLabel(filter = {}, index = 0) {

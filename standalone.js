@@ -346,7 +346,7 @@ function buildBrandYearsText(session) {
   const preset = getBrandPreset(session?.pendingBrandKey)
   return [
     `📅 Выберите год для ${preset?.label || 'марки'}.`,
-    'Диапазон: 2000-2026.',
+    'Диапазон: 2010-2026.',
   ].join('\n')
 }
 
