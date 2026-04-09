@@ -139,7 +139,12 @@ function wrapYearScopedQuery(scopePrefix, manufacturerTokens = [], year = DEFAUL
     clauses.push(manufacturerOr)
   }
 
-  if (!clauses.length) return `${scopePrefix})`
+  if (!clauses.length) {
+    const normalizedPrefix = scopePrefix.endsWith('._')
+      ? `${scopePrefix.slice(0, -2)}.`
+      : scopePrefix
+    return `${normalizedPrefix})`
+  }
   return `${scopePrefix}.${clauses.join('_.')})`
 }
 
@@ -155,16 +160,21 @@ function buildScopeListQuery(parseScope = PARSE_SCOPE_ALL) {
 function buildBrandListQuery(brandKey = '', year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
   const preset = getBrandPreset(brandKey)
   if (!preset) return buildScopeListQuery(PARSE_SCOPE_ALL)
+  const normalizedYear = normalizeBrandYear(year, 0)
+
+  if (!normalizedYear) {
+    return buildScopeListQuery(preset.scope)
+  }
 
   if (preset.scope === PARSE_SCOPE_DOMESTIC) {
-    return wrapYearScopedQuery('(And.Hidden.N._.CarType.Y._', preset.manufacturerTokens, year, month)
+    return wrapYearScopedQuery('(And.Hidden.N._.CarType.Y._', [], year, month)
   }
 
   if (preset.scope === PARSE_SCOPE_IMPORTED) {
-    return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', preset.manufacturerTokens, year, month)
+    return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', [], year, month)
   }
 
-  return wrapYearScopedQuery('(And.Hidden.N._', preset.manufacturerTokens, year, month)
+  return wrapYearScopedQuery('(And.Hidden.N._', [], year, month)
 }
 
 function hashText(value) {
