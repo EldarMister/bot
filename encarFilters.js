@@ -119,14 +119,28 @@ function buildManufacturerOrQuery(tokens = []) {
 }
 
 function buildRangeMarker(year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
-  return `${normalizeBrandYear(year, DEFAULT_BRAND_YEAR)}${String(normalizeBrandMonth(month, DEFAULT_BRAND_MONTH)).padStart(2, '0')}`
+  const normalizedYear = normalizeBrandYear(year, 0)
+  if (!normalizedYear) return ''
+
+  const normalizedMonth = normalizeBrandMonth(month, 0)
+  return `${normalizedYear}${String(normalizedMonth || 0).padStart(2, '0')}`
 }
 
 function wrapYearScopedQuery(scopePrefix, manufacturerTokens = [], year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
   const manufacturerOr = buildManufacturerOrQuery(manufacturerTokens)
   const rangeStart = buildRangeMarker(year, month)
-  if (!manufacturerOr) return `${scopePrefix}.Year.range(${rangeStart}..).)`
-  return `${scopePrefix}.Year.range(${rangeStart}..)._.${manufacturerOr})`
+  const clauses = []
+
+  if (rangeStart) {
+    clauses.push(`Year.range(${rangeStart}..).`)
+  }
+
+  if (manufacturerOr) {
+    clauses.push(manufacturerOr)
+  }
+
+  if (!clauses.length) return `${scopePrefix})`
+  return `${scopePrefix}.${clauses.join('_.')})`
 }
 
 function buildScopeListQuery(parseScope = PARSE_SCOPE_ALL) {
@@ -346,9 +360,9 @@ export function getScopeLabel(parseScope) {
 
 export function getBrandSelectionKey(selection = {}) {
   const brandKey = normalizeBrandKey(selection?.brandKey)
-  const year = normalizeBrandYear(selection?.year)
-  const month = normalizeBrandMonth(selection?.month)
-  return brandKey ? `${brandKey}:${year}:${month}` : ''
+  const year = normalizeBrandYear(selection?.year, 0)
+  const month = year ? normalizeBrandMonth(selection?.month, 0) : 0
+  return brandKey ? `${brandKey}:${year || 'all'}:${month || 'all'}` : ''
 }
 
 export function normalizeBrandSelections(value, legacyBrandKey = '') {
@@ -362,8 +376,10 @@ export function normalizeBrandSelections(value, legacyBrandKey = '') {
 
     const normalized = {
       brandKey,
-      year: normalizeBrandYear(selection?.year),
-      month: normalizeBrandMonth(selection?.month),
+      year: normalizeBrandYear(selection?.year, 0),
+      month: normalizeBrandYear(selection?.year, 0)
+        ? normalizeBrandMonth(selection?.month, 0)
+        : 0,
     }
 
     const uniqueKey = getBrandSelectionKey(normalized)
@@ -376,8 +392,8 @@ export function normalizeBrandSelections(value, legacyBrandKey = '') {
   if (!selections.length && legacyKey) {
     selections.push({
       brandKey: legacyKey,
-      year: DEFAULT_BRAND_YEAR,
-      month: DEFAULT_BRAND_MONTH,
+      year: 0,
+      month: 0,
     })
   }
 
@@ -416,9 +432,13 @@ export function normalizeCustomFilters(value, legacyCustomFilterUrl = '', legacy
 
 export function getBrandSelectionLabel(selection = {}) {
   const preset = getBrandPreset(selection?.brandKey)
-  const year = normalizeBrandYear(selection?.year)
-  const month = normalizeBrandMonth(selection?.month)
-  return `${preset?.label || selection?.brandKey || 'Марка'} с ${month.toString().padStart(2, '0')}.${year}`
+  const year = normalizeBrandYear(selection?.year, 0)
+  const month = year ? normalizeBrandMonth(selection?.month, 0) : 0
+  const baseLabel = preset?.label || selection?.brandKey || 'Марка'
+
+  if (!year) return baseLabel
+  if (!month) return `${baseLabel} с ${year}`
+  return `${baseLabel} с ${month.toString().padStart(2, '0')}.${year}`
 }
 
 export function getCustomFilterLabel(filter = {}, index = 0) {

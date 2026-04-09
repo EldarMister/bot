@@ -470,11 +470,13 @@ export async function startStandaloneTelegramFreshBot() {
   async function sendControlMessage(chatId, text, session, section = KEYBOARD_SECTION_MAIN, { deleteMessageIds = [] } = {}) {
     const keyboard = buildControlKeyboard(session, section)
     const existingMessageId = normalizeMessageId(session?.lastControlMessageId)
+    const controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
+    const nextMessageId = normalizeMessageId(controlMessage?.message_id)
     const messageIdsToDelete = Array.from(
       new Set(
         [existingMessageId, ...deleteMessageIds]
           .map((value) => normalizeMessageId(value))
-          .filter(Boolean),
+          .filter((value) => value && value !== nextMessageId),
       ),
     )
 
@@ -483,9 +485,6 @@ export async function startStandaloneTelegramFreshBot() {
         messageIdsToDelete.map((messageId) => deleteTelegramMessage(chatId, messageId)),
       )
     }
-
-    const controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
-    const nextMessageId = normalizeMessageId(controlMessage?.message_id)
 
     const nextSession = stateStore.upsertSession(chatId, {
       lastControlMessageId: nextMessageId,
@@ -642,6 +641,42 @@ export async function startStandaloneTelegramFreshBot() {
 
     if (text === BUTTON_BACK) {
       if (currentSession?.awaitingBrandMonth || currentSession?.currentSection === KEYBOARD_SECTION_BRAND_MONTHS) {
+        if (currentSession?.pendingBrandKey && currentSession?.pendingBrandYear) {
+          const fallbackSelection = {
+            brandKey: currentSession.pendingBrandKey,
+            year: currentSession.pendingBrandYear,
+            month: 0,
+          }
+          const nextSelections = normalizeBrandSelections([
+            ...getSessionBrandSelections(currentSession),
+            fallbackSelection,
+          ])
+
+          const session = stateStore.upsertSession(chatId, {
+            ...commonUserFields,
+            filterMode: FILTER_MODE_BRAND,
+            brandSelections: nextSelections,
+            brandKey: currentSession.pendingBrandKey,
+            currentSection: KEYBOARD_SECTION_BRAND_YEARS,
+            awaitingBrandMonth: false,
+            awaitingBrandYear: true,
+            pendingBrandYear: 0,
+          })
+          await stateStore.flush()
+          wakeParserLoop()
+          await respondWithControl(
+            message,
+            [
+              `✅ Добавлен фильтр: ${getBrandSelectionLabel(fallbackSelection)}.`,
+              '',
+              buildBrandYearsText(session),
+            ].join('\n'),
+            session,
+            KEYBOARD_SECTION_BRAND_YEARS,
+          )
+          return
+        }
+
         const session = stateStore.upsertSession(chatId, {
           ...commonUserFields,
           currentSection: KEYBOARD_SECTION_BRAND_YEARS,
@@ -654,6 +689,42 @@ export async function startStandaloneTelegramFreshBot() {
       }
 
       if (currentSession?.awaitingBrandYear || currentSession?.currentSection === KEYBOARD_SECTION_BRAND_YEARS) {
+        if (currentSession?.pendingBrandKey) {
+          const fallbackSelection = {
+            brandKey: currentSession.pendingBrandKey,
+            year: 0,
+            month: 0,
+          }
+          const nextSelections = normalizeBrandSelections([
+            ...getSessionBrandSelections(currentSession),
+            fallbackSelection,
+          ])
+
+          const session = stateStore.upsertSession(chatId, {
+            ...commonUserFields,
+            filterMode: FILTER_MODE_BRAND,
+            brandSelections: nextSelections,
+            brandKey: currentSession.pendingBrandKey,
+            currentSection: KEYBOARD_SECTION_BRANDS,
+            awaitingBrandYear: false,
+            pendingBrandYear: 0,
+            pendingBrandKey: '',
+          })
+          await stateStore.flush()
+          wakeParserLoop()
+          await respondWithControl(
+            message,
+            [
+              `✅ Добавлен фильтр: ${getBrandSelectionLabel(fallbackSelection)}.`,
+              '',
+              buildBrandsText(session),
+            ].join('\n'),
+            session,
+            KEYBOARD_SECTION_BRANDS,
+          )
+          return
+        }
+
         const session = stateStore.upsertSession(chatId, {
           ...commonUserFields,
           currentSection: KEYBOARD_SECTION_BRANDS,
