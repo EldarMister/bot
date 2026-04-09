@@ -10,6 +10,15 @@ import {
   shouldRetryViaAlternateEncarSource,
   suppressEncarProxy,
 } from './encarSource.js'
+import {
+  FILTER_MODE_BRAND,
+  FILTER_MODE_CUSTOM,
+  getSessionFilterKey,
+  matchesBrandPreset,
+  normalizeFilterMode,
+  normalizeParseScope,
+  resolveSessionListQuery,
+} from './encarFilters.js'
 
 const LIST_PAGE_SIZE = 20
 const MIN_YEAR = 2019
@@ -20,12 +29,6 @@ const FRESH_RULES = Object.freeze({
   maxCallCount: 0,
   maxSubscribeCount: 0,
 })
-
-const PARSE_SCOPE_ALL = 'all'
-const PARSE_SCOPE_DOMESTIC = 'domestic'
-const PARSE_SCOPE_IMPORTED = 'imported'
-const PARSE_SCOPE_JAPANESE = 'japanese'
-const PARSE_SCOPE_GERMAN = 'german'
 
 const JAPANESE_BRAND_ALIASES = [
   'toyota',
@@ -746,22 +749,9 @@ function classifyVehicleOrigin(...values) {
   return 'imported'
 }
 
-function normalizeParseScope(value) {
-  return value === PARSE_SCOPE_DOMESTIC
-    || value === PARSE_SCOPE_IMPORTED
-    || value === PARSE_SCOPE_JAPANESE
-    || value === PARSE_SCOPE_GERMAN
-    ? value
-    : PARSE_SCOPE_ALL
-}
-
 function parseListYear(rawYear) {
   const match = cleanText(rawYear).match(/\d{4}/)
   return match ? Number.parseInt(match[0], 10) : 0
-}
-
-function buildListQuery() {
-  return '(And.Hidden.N._.Year.range(201900..).)'
 }
 
 function parseYear(category = {}, fallbackRaw = {}) {
@@ -802,7 +792,7 @@ function buildManageMetrics(manage = {}, contact = {}) {
 
 function matchesParseScope(listing, parseScope) {
   const normalizedScope = normalizeParseScope(parseScope)
-  if (normalizedScope === PARSE_SCOPE_ALL) return true
+  if (normalizedScope === 'all') return true
 
   const origin = classifyVehicleOrigin(
     listing?.manufacturer,
@@ -810,16 +800,55 @@ function matchesParseScope(listing, parseScope) {
     listing?.model,
   )
 
-  if (normalizedScope === PARSE_SCOPE_DOMESTIC) return origin === 'korean'
-  if (normalizedScope === PARSE_SCOPE_IMPORTED) return origin === 'imported'
-  if (normalizedScope === PARSE_SCOPE_JAPANESE) {
+  if (normalizedScope === 'domestic') return origin === 'korean'
+  if (normalizedScope === 'imported') return origin === 'imported'
+  if (normalizedScope === 'japanese') {
     return matchesAliases([listing?.manufacturer, listing?.name, listing?.model], JAPANESE_BRAND_ALIASES)
   }
-  if (normalizedScope === PARSE_SCOPE_GERMAN) {
+  if (normalizedScope === 'german') {
     return matchesAliases([listing?.manufacturer, listing?.name, listing?.model], GERMAN_BRAND_ALIASES)
   }
 
   return true
+}
+
+function matchesSessionFilter(listing, session = {}) {
+  const filterMode = normalizeFilterMode(session?.filterMode)
+  if (filterMode === FILTER_MODE_BRAND) {
+    return matchesBrandPreset(listing, session?.brandKey)
+  }
+  if (filterMode === FILTER_MODE_CUSTOM) {
+    return true
+  }
+
+  const normalizedScope = normalizeParseScope(session?.parseScope)
+  return matchesParseScope(listing, normalizedScope)
+}
+
+function buildFilterGroups(sessions = []) {
+  const groups = new Map()
+
+  for (const session of sessions) {
+    const filterKey = getSessionFilterKey(session)
+    const query = resolveSessionListQuery(session)
+    if (!filterKey || !query) continue
+
+    const existing = groups.get(filterKey) || {
+      filterKey,
+      query,
+      sessions: [],
+      chatIds: [],
+    }
+
+    existing.sessions.push(session)
+    if (session?.chatId && !existing.chatIds.includes(session.chatId)) {
+      existing.chatIds.push(session.chatId)
+    }
+
+    groups.set(filterKey, existing)
+  }
+
+  return [...groups.values()]
 }
 
 function passesFreshRules(manage) {
@@ -884,11 +913,11 @@ export function createStandaloneEncarClient(env = {}) {
   const detailDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_DETAIL_DELAY_MS || '150'), 10) || 150)
   const pageDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_PAGE_DELAY_MS || '250'), 10) || 250)
 
-  async function fetchListPageDirect(offset = 0) {
+  async function fetchListPageDirect(offset = 0, filterGroup = null) {
     const response = await apiClient.get('/search/car/list/premium', {
       params: {
         count: true,
-        q: buildListQuery(),
+        q: resolveSessionListQuery(filterGroup?.sessions?.[0] || {}),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
       },
       headers: {
@@ -902,14 +931,14 @@ export function createStandaloneEncarClient(env = {}) {
     }
   }
 
-  async function fetchListPageViaProxy(offset = 0) {
+  async function fetchListPageViaProxy(offset = 0, filterGroup = null) {
     const data = await fetchViaEncarProxy(
       {
         endpoint: 'list',
         offset,
         limit: LIST_PAGE_SIZE,
         count: true,
-        q: buildListQuery(),
+        q: resolveSessionListQuery(filterGroup?.sessions?.[0] || {}),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
         sort: 'ModifiedDate',
       },
@@ -928,7 +957,7 @@ export function createStandaloneEncarClient(env = {}) {
     }
   }
 
-  async function fetchListPage(offset = 0) {
+  async function fetchListPage(offset = 0, filterGroup = null) {
     const preferred = hasEncarProxy(env) && !isEncarProxySuppressed(env)
       ? getPreferredEncarSource('list')
       : 'direct'
@@ -936,11 +965,11 @@ export function createStandaloneEncarClient(env = {}) {
     const fetchers = []
 
     if (preferred === 'proxy' && hasEncarProxy(env) && !isEncarProxySuppressed(env)) {
-      fetchers.push({ name: 'proxy', run: () => fetchListPageViaProxy(offset) })
+      fetchers.push({ name: 'proxy', run: () => fetchListPageViaProxy(offset, filterGroup) })
     }
-    fetchers.push({ name: 'direct', run: () => fetchListPageDirect(offset) })
+    fetchers.push({ name: 'direct', run: () => fetchListPageDirect(offset, filterGroup) })
     if (preferred !== 'proxy' && hasEncarProxy(env) && !isEncarProxySuppressed(env)) {
-      fetchers.push({ name: 'proxy', run: () => fetchListPageViaProxy(offset) })
+      fetchers.push({ name: 'proxy', run: () => fetchListPageViaProxy(offset, filterGroup) })
     }
 
     let lastError = null
@@ -971,7 +1000,7 @@ export function createStandaloneEncarClient(env = {}) {
       && shouldRetryViaAlternateEncarSource(lastError)
     ) {
       try {
-        const page = await fetchListPageViaProxy(offset)
+        const page = await fetchListPageViaProxy(offset, filterGroup)
         rememberHealthyEncarSource('list', 'proxy')
         return {
           ...page,
@@ -1118,106 +1147,111 @@ export function createStandaloneEncarClient(env = {}) {
     onFreshListing,
     onLog = () => {},
   } = {}) {
-    let offset = 0
     let pagesProcessed = 0
-    let stalePages = 0
     let newFreshCount = 0
 
-    while (pagesProcessed < maxPages) {
-      const currentSessions = getActiveSessions()
-      if (!currentSessions.length) break
+    const initialGroups = buildFilterGroups(getActiveSessions())
+    for (const initialGroup of initialGroups) {
+      let offset = 0
+      let stalePages = 0
+      let groupPagesProcessed = 0
 
-      const page = await fetchListPage(offset)
-      if (Array.isArray(page?.sourceDiagnostics) && page.sourceDiagnostics.length) {
-        onLog(`LIST_SOURCE_FALLBACK | offset=${offset} | source=${cleanText(page?.source) || 'unknown'} | failures=${page.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
-      }
-      const pageCars = Array.isArray(page.cars) ? page.cars : []
-      if (!pageCars.length) break
+      while (groupPagesProcessed < maxPages) {
+        const liveGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === initialGroup.filterKey)
+        if (!liveGroup?.chatIds?.length) break
 
-      pagesProcessed += 1
-      offset += pageCars.length
-      let pageFreshHits = 0
-
-      for (const raw of pageCars) {
-        const activeSessions = getActiveSessions()
-        if (!activeSessions.length) break
-
-        const encarId = cleanText(raw?.Id)
-        if (!encarId) continue
-        if (stateStore.getSeenListing(encarId)) continue
-
-        const rawYear = parseListYear(raw?.Year)
-        if (!Number.isFinite(rawYear) || rawYear < MIN_YEAR) {
-          stateStore.rememberListing(encarId, { qualifiesFresh: false })
-          continue
+        const page = await fetchListPage(offset, liveGroup)
+        if (Array.isArray(page?.sourceDiagnostics) && page.sourceDiagnostics.length) {
+          onLog(`LIST_SOURCE_FALLBACK | filter=${liveGroup.filterKey} | offset=${offset} | source=${cleanText(page?.source) || 'unknown'} | failures=${page.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
         }
+        const pageCars = Array.isArray(page.cars) ? page.cars : []
+        if (!pageCars.length) break
 
-        const rawListing = {
-          manufacturer: resolveManufacturerDisplayName(raw?.Manufacturer, raw?.Model, raw?.Name),
-          name: normalizeText(raw?.Name),
-          model: normalizeText(raw?.Model || raw?.Badge),
-        }
+        pagesProcessed += 1
+        groupPagesProcessed += 1
+        offset += pageCars.length
+        let pageFreshHits = 0
 
-        const sessionsMatchingRaw = activeSessions.filter((session) => matchesParseScope(rawListing, session.parseScope))
-        if (!sessionsMatchingRaw.length) continue
+        for (const raw of pageCars) {
+          const currentGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === liveGroup.filterKey)
+          if (!currentGroup?.chatIds?.length) break
+          const isCustomGroup = normalizeFilterMode(currentGroup.sessions[0]?.filterMode) === FILTER_MODE_CUSTOM
 
-        let detail = null
-        try {
-          detail = await fetchVehicleDetail(encarId, raw)
-          if (Array.isArray(detail?.sourceDiagnostics) && detail.sourceDiagnostics.length) {
-            onLog(`DETAIL_SOURCE_FALLBACK | encar_id=${encarId} | source=${cleanText(detail?.source) || 'unknown'} | failures=${detail.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
+          const encarId = cleanText(raw?.Id)
+          if (!encarId) continue
+
+          const listingStateKey = `${currentGroup.filterKey}::${encarId}`
+          if (stateStore.getSeenListing(listingStateKey)) continue
+
+          const rawYear = parseListYear(raw?.Year)
+          if (!isCustomGroup && (!Number.isFinite(rawYear) || rawYear < MIN_YEAR)) {
+            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+            continue
           }
-        } catch (error) {
-          onLog(`DETAIL_FETCH_FAILED | encar_id=${encarId} | ${cleanText(error?.message) || 'unknown error'}`)
-          continue
+
+          const rawListing = {
+            manufacturer: resolveManufacturerDisplayName(raw?.Manufacturer, raw?.Model, raw?.Name),
+            name: normalizeText(raw?.Name),
+            model: normalizeText(raw?.Model || raw?.Badge),
+          }
+
+          if (!matchesSessionFilter(rawListing, currentGroup.sessions[0])) continue
+
+          let detail = null
+          try {
+            detail = await fetchVehicleDetail(encarId, raw)
+            if (Array.isArray(detail?.sourceDiagnostics) && detail.sourceDiagnostics.length) {
+              onLog(`DETAIL_SOURCE_FALLBACK | filter=${currentGroup.filterKey} | encar_id=${encarId} | source=${cleanText(detail?.source) || 'unknown'} | failures=${detail.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
+            }
+          } catch (error) {
+            onLog(`DETAIL_FETCH_FAILED | filter=${currentGroup.filterKey} | encar_id=${encarId} | ${cleanText(error?.message) || 'unknown error'}`)
+            continue
+          }
+
+          const qualifiesFresh = passesFreshRules(detail.manage)
+          stateStore.rememberListing(listingStateKey, {
+            priceKrw: detail.priceKrw,
+            viewCount: detail.manage.viewCount,
+            callCount: detail.manage.callCount,
+            subscribeCount: detail.manage.subscribeCount,
+            qualifiesFresh,
+          })
+
+          if (!qualifiesFresh) continue
+
+          const latestGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === currentGroup.filterKey)
+          const matchingChatIds = latestGroup?.chatIds || []
+          if (!matchingChatIds.length) continue
+
+          pageFreshHits += 1
+          newFreshCount += 1
+          await onFreshListing(detail, matchingChatIds)
+          stateStore.rememberListing(listingStateKey, {
+            priceKrw: detail.priceKrw,
+            viewCount: detail.manage.viewCount,
+            callCount: detail.manage.callCount,
+            subscribeCount: detail.manage.subscribeCount,
+            qualifiesFresh: true,
+            notifiedAt: new Date().toISOString(),
+          })
+
+          if (detailDelayMs > 0) {
+            await sleep(detailDelayMs)
+          }
         }
 
-        const qualifiesFresh = passesFreshRules(detail.manage)
-        stateStore.rememberListing(encarId, {
-          priceKrw: detail.priceKrw,
-          viewCount: detail.manage.viewCount,
-          callCount: detail.manage.callCount,
-          subscribeCount: detail.manage.subscribeCount,
-          qualifiesFresh,
-        })
-
-        if (!qualifiesFresh) continue
-
-        const latestSessions = getActiveSessions()
-        const matchingChatIds = latestSessions
-          .filter((session) => matchesParseScope(detail, session.parseScope))
-          .map((session) => session.chatId)
-
-        if (!matchingChatIds.length) continue
-
-        pageFreshHits += 1
-        newFreshCount += 1
-        await onFreshListing(detail, matchingChatIds)
-        stateStore.rememberListing(encarId, {
-          priceKrw: detail.priceKrw,
-          viewCount: detail.manage.viewCount,
-          callCount: detail.manage.callCount,
-          subscribeCount: detail.manage.subscribeCount,
-          qualifiesFresh: true,
-          notifiedAt: new Date().toISOString(),
-        })
-
-        if (detailDelayMs > 0) {
-          await sleep(detailDelayMs)
+        if (pageFreshHits === 0) {
+          stalePages += 1
+        } else {
+          stalePages = 0
         }
-      }
 
-      if (pageFreshHits === 0) {
-        stalePages += 1
-      } else {
-        stalePages = 0
-      }
+        if (stalePages >= stalePageLimit) break
+        if (pageCars.length < LIST_PAGE_SIZE) break
 
-      if (stalePages >= stalePageLimit) break
-      if (pageCars.length < LIST_PAGE_SIZE) break
-
-      if (pageDelayMs > 0) {
-        await sleep(pageDelayMs)
+        if (pageDelayMs > 0) {
+          await sleep(pageDelayMs)
+        }
       }
     }
 

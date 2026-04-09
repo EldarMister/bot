@@ -1,5 +1,11 @@
 import fs from 'fs/promises'
 import path from 'path'
+import {
+  FILTER_MODE_SCOPE,
+  normalizeBrandKey,
+  normalizeFilterMode,
+  normalizeParseScope,
+} from './encarFilters.js'
 
 const DEFAULT_STATE = Object.freeze({
   lastUpdateId: 0,
@@ -7,7 +13,6 @@ const DEFAULT_STATE = Object.freeze({
   seenListings: {},
 })
 
-const DEFAULT_PARSE_SCOPE = 'all'
 const SEEN_LISTING_TTL_MS = 14 * 24 * 60 * 60 * 1000
 const MAX_SEEN_LISTINGS = 8000
 
@@ -31,19 +36,15 @@ function normalizeChatId(value) {
   return Number.isFinite(parsed) ? String(parsed) : ''
 }
 
-function normalizeParseScope(value) {
-  return value === 'domestic'
-    || value === 'imported'
-    || value === 'japanese'
-    || value === 'german'
-    ? value
-    : DEFAULT_PARSE_SCOPE
-}
-
 function buildDefaultSession(chatId) {
   return {
     chatId: normalizeChatId(chatId),
-    parseScope: DEFAULT_PARSE_SCOPE,
+    parseScope: normalizeParseScope('all'),
+    filterMode: FILTER_MODE_SCOPE,
+    brandKey: '',
+    customFilterUrl: '',
+    customFilterQuery: '',
+    awaitingCustomFilter: false,
     isActive: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -66,6 +67,11 @@ function normalizeState(rawState) {
         ...session,
         chatId: normalizedChatId,
         parseScope: normalizeParseScope(session?.parseScope),
+        filterMode: normalizeFilterMode(session?.filterMode),
+        brandKey: normalizeBrandKey(session?.brandKey),
+        customFilterUrl: cleanText(session?.customFilterUrl),
+        customFilterQuery: cleanText(session?.customFilterQuery),
+        awaitingCustomFilter: Boolean(session?.awaitingCustomFilter),
         isActive: Boolean(session?.isActive),
         username: cleanText(session?.username),
         firstName: cleanText(session?.firstName),
@@ -170,6 +176,13 @@ export class LocalStateStore {
       ...patch,
       chatId: normalizedChatId,
       parseScope: normalizeParseScope(patch.parseScope ?? current.parseScope),
+      filterMode: normalizeFilterMode(patch.filterMode ?? current.filterMode),
+      brandKey: normalizeBrandKey(patch.brandKey ?? current.brandKey),
+      customFilterUrl: cleanText(patch.customFilterUrl ?? current.customFilterUrl),
+      customFilterQuery: cleanText(patch.customFilterQuery ?? current.customFilterQuery),
+      awaitingCustomFilter: typeof patch.awaitingCustomFilter === 'boolean'
+        ? patch.awaitingCustomFilter
+        : Boolean(current.awaitingCustomFilter),
       isActive: typeof patch.isActive === 'boolean' ? patch.isActive : Boolean(current.isActive),
       username: cleanText(patch.username ?? current.username),
       firstName: cleanText(patch.firstName ?? current.firstName),
