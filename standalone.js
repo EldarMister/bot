@@ -127,6 +127,21 @@ function parseDeleteLinkButton(text) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
+function getDeleteFilterButtons(session = {}) {
+  const filterMode = normalizeFilterMode(session?.filterMode)
+  if (filterMode === FILTER_MODE_BRAND) {
+    return getSessionBrandSelections(session)
+      .map((_, index) => getDeleteLinkButtonLabel(index + 1))
+  }
+
+  if (filterMode === FILTER_MODE_CUSTOM) {
+    return getSessionCustomFilters(session)
+      .map((_, index) => getDeleteLinkButtonLabel(index + 1))
+  }
+
+  return []
+}
+
 function parseYearButton(text) {
   const parsed = Number.parseInt(cleanText(text), 10)
   return YEAR_OPTIONS.includes(parsed) ? parsed : 0
@@ -227,6 +242,7 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
     keyboard: [
       [{ text: toggleButtonLabel }],
       [{ text: BUTTON_STATUS }, { text: BUTTON_FILTERS }],
+      ...buildButtonRows(getDeleteFilterButtons(session), 3),
     ],
     resize_keyboard: true,
     one_time_keyboard: false,
@@ -276,6 +292,10 @@ function buildStatusText(session) {
   }
 
   lines.push('', `🔘 Действие: ${isActive ? BUTTON_STOP : BUTTON_START}`)
+  if (getDeleteFilterButtons(session).length) {
+    lines.push('', '🗑 Удаление фильтров: кнопки ниже.')
+  }
+
   return lines.join('\n')
 }
 
@@ -319,21 +339,13 @@ function buildBrandMonthsText(session) {
 
 function buildCustomFilterText(session) {
   return [
-    '🔗 Свой фильтр Encar',
     'Нажмите «➕ Добавить ссылку», затем пришлите одну или несколько ссылок Encar.',
-    'Каждая ссылка будет сохранена отдельно. Ненужные можно удалить кнопками ниже.',
-    '',
-    ...buildCustomFiltersLines(session),
   ].join('\n')
 }
 
 function buildAwaitingCustomFilterText(session) {
   return [
     '➕ Пришлите одну или несколько Encar-ссылок.',
-    'Можно отправить ссылки по одной или несколько ссылок одним сообщением.',
-    'Также можно прислать raw `q=(And...)`.',
-    '',
-    ...buildCustomFiltersLines(session),
   ].join('\n')
 }
 
@@ -434,42 +446,37 @@ export async function startStandaloneTelegramFreshBot() {
     return response?.data?.result || null
   }
 
-  async function editTelegramMessage(chatId, messageId, text, { keyboard = null } = {}) {
-    const response = await axios.post(
-      getTelegramApiUrl(botToken, 'editMessageText'),
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        text,
-        disable_web_page_preview: true,
-        ...(keyboard ? { reply_markup: keyboard } : {}),
-      },
-      {
-        timeout: TELEGRAM_TIMEOUT_MS,
-      },
-    )
-    return response?.data?.result || null
+  async function deleteTelegramMessage(chatId, messageId) {
+    const normalizedMessageId = normalizeMessageId(messageId)
+    if (!normalizedMessageId) return false
+
+    try {
+      await axios.post(
+        getTelegramApiUrl(botToken, 'deleteMessage'),
+        {
+          chat_id: chatId,
+          message_id: normalizedMessageId,
+        },
+        {
+          timeout: TELEGRAM_TIMEOUT_MS,
+        },
+      )
+      return true
+    } catch {
+      return false
+    }
   }
 
   async function sendControlMessage(chatId, text, session, section = KEYBOARD_SECTION_MAIN) {
     const keyboard = buildControlKeyboard(session, section)
     const existingMessageId = normalizeMessageId(session?.lastControlMessageId)
-    let controlMessage = null
+    const controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
+    const nextMessageId = normalizeMessageId(controlMessage?.message_id)
 
-    if (existingMessageId) {
-      try {
-        controlMessage = await editTelegramMessage(chatId, existingMessageId, text, { keyboard })
-      } catch (error) {
-        const description = cleanText(error?.response?.data?.description || error?.message).toLowerCase()
-        if (!description.includes('message is not modified')) {
-          controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
-        }
-      }
-    } else {
-      controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
+    if (existingMessageId && existingMessageId !== nextMessageId) {
+      await deleteTelegramMessage(chatId, existingMessageId)
     }
 
-    const nextMessageId = normalizeMessageId(controlMessage?.message_id || existingMessageId)
     const nextSession = stateStore.upsertSession(chatId, {
       lastControlMessageId: nextMessageId,
       currentSection: section,
@@ -480,6 +487,16 @@ export async function startStandaloneTelegramFreshBot() {
 
   async function sendListingMessage(chatId, listing) {
     await sendTelegramMessage(chatId, buildListingMessage(listing))
+  }
+
+  async function respondWithControl(message, text, session, section = KEYBOARD_SECTION_MAIN) {
+    const chatId = normalizeChatId(message?.chat?.id)
+    const sourceMessageId = normalizeMessageId(message?.message_id)
+    const nextSession = await sendControlMessage(chatId, text, session, section)
+    if (sourceMessageId) {
+      await deleteTelegramMessage(chatId, sourceMessageId)
+    }
+    return nextSession
   }
 
   async function handleIncomingControl(message) {
@@ -508,7 +525,7 @@ export async function startStandaloneTelegramFreshBot() {
         currentSection: KEYBOARD_SECTION_MAIN,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
+      await respondWithControl(message, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
       return
     }
 
@@ -520,8 +537,8 @@ export async function startStandaloneTelegramFreshBot() {
       })
       await stateStore.flush()
       wakeParserLoop()
-      await sendControlMessage(
-        chatId,
+      await respondWithControl(
+        message,
         [
           '⏹️ Парсинг остановлен.',
           `🎯 Фильтр сохранён: ${formatCurrentFilterLabel(session)}.`,
@@ -540,8 +557,8 @@ export async function startStandaloneTelegramFreshBot() {
       })
       await stateStore.flush()
       wakeParserLoop()
-      await sendControlMessage(
-        chatId,
+      await respondWithControl(
+        message,
         [
           '🚀 Парсинг запущен.',
           `🎯 Фильтр: ${formatCurrentFilterLabel(session)}.`,
@@ -559,7 +576,7 @@ export async function startStandaloneTelegramFreshBot() {
         currentSection: KEYBOARD_SECTION_MAIN,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
+      await respondWithControl(message, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
       return
     }
 
@@ -570,7 +587,7 @@ export async function startStandaloneTelegramFreshBot() {
         awaitingCustomFilter: false,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
+      await respondWithControl(message, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
       return
     }
 
@@ -585,7 +602,7 @@ export async function startStandaloneTelegramFreshBot() {
         pendingBrandYear: 0,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildBrandsText(session), session, KEYBOARD_SECTION_BRANDS)
+      await respondWithControl(message, buildBrandsText(session), session, KEYBOARD_SECTION_BRANDS)
       return
     }
 
@@ -600,7 +617,7 @@ export async function startStandaloneTelegramFreshBot() {
         pendingBrandYear: 0,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
+      await respondWithControl(message, buildCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
       return
     }
 
@@ -611,7 +628,7 @@ export async function startStandaloneTelegramFreshBot() {
         awaitingCustomFilter: true,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildAwaitingCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
+      await respondWithControl(message, buildAwaitingCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
       return
     }
 
@@ -624,7 +641,7 @@ export async function startStandaloneTelegramFreshBot() {
           awaitingBrandYear: true,
         })
         await stateStore.flush()
-        await sendControlMessage(chatId, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
+        await respondWithControl(message, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
         return
       }
 
@@ -637,7 +654,7 @@ export async function startStandaloneTelegramFreshBot() {
           pendingBrandKey: '',
         })
         await stateStore.flush()
-        await sendControlMessage(chatId, buildBrandsText(session), session, KEYBOARD_SECTION_BRANDS)
+        await respondWithControl(message, buildBrandsText(session), session, KEYBOARD_SECTION_BRANDS)
         return
       }
 
@@ -648,7 +665,7 @@ export async function startStandaloneTelegramFreshBot() {
           awaitingCustomFilter: false,
         })
         await stateStore.flush()
-        await sendControlMessage(chatId, buildCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
+        await respondWithControl(message, buildCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
         return
       }
 
@@ -658,7 +675,7 @@ export async function startStandaloneTelegramFreshBot() {
           currentSection: KEYBOARD_SECTION_FILTERS,
         })
         await stateStore.flush()
-        await sendControlMessage(chatId, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
+        await respondWithControl(message, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
         return
       }
 
@@ -670,11 +687,44 @@ export async function startStandaloneTelegramFreshBot() {
       })
       await stateStore.flush()
       if (session.currentSection === KEYBOARD_SECTION_FILTERS) {
-        await sendControlMessage(chatId, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
+        await respondWithControl(message, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
       } else {
-        await sendControlMessage(chatId, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
+        await respondWithControl(message, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
       }
       return
+    }
+
+    if (deleteCustomIndex > 0 && normalizeFilterMode(currentSession?.filterMode) === FILTER_MODE_BRAND) {
+      const currentBrands = getSessionBrandSelections(currentSession)
+      if (deleteCustomIndex <= currentBrands.length) {
+        const nextBrands = currentBrands.filter((_, index) => index !== deleteCustomIndex - 1)
+        const nextFilterMode = nextBrands.length
+          ? FILTER_MODE_BRAND
+          : getSessionCustomFilters(currentSession).length
+            ? FILTER_MODE_CUSTOM
+            : FILTER_MODE_SCOPE
+
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          filterMode: nextFilterMode,
+          brandSelections: nextBrands,
+          brandKey: nextBrands.at(-1)?.brandKey || '',
+          currentSection: KEYBOARD_SECTION_MAIN,
+        })
+        await stateStore.flush()
+        wakeParserLoop()
+        await respondWithControl(
+          message,
+          [
+            `🗑 Фильтр ${deleteCustomIndex} удалён.`,
+            '',
+            buildStatusText(session),
+          ].join('\n'),
+          session,
+          KEYBOARD_SECTION_MAIN,
+        )
+        return
+      }
     }
 
     if (deleteCustomIndex > 0) {
@@ -686,27 +736,30 @@ export async function startStandaloneTelegramFreshBot() {
           : getSessionBrandSelections(currentSession).length
             ? FILTER_MODE_BRAND
             : FILTER_MODE_SCOPE
+        const nextSection = currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
+          ? KEYBOARD_SECTION_CUSTOM
+          : KEYBOARD_SECTION_MAIN
 
         const session = stateStore.upsertSession(chatId, {
           ...commonUserFields,
           filterMode: nextFilterMode,
           customFilters: nextCustomFilters,
-          currentSection: KEYBOARD_SECTION_CUSTOM,
+          currentSection: nextSection,
           awaitingCustomFilter: false,
           customFilterUrl: nextCustomFilters.at(-1)?.url || '',
           customFilterQuery: nextCustomFilters.at(-1)?.query || '',
         })
         await stateStore.flush()
         wakeParserLoop()
-        await sendControlMessage(
-          chatId,
+        await respondWithControl(
+          message,
           [
             `🗑 Ссылка ${deleteCustomIndex} удалена.`,
             '',
-            buildCustomFilterText(session),
+            nextSection === KEYBOARD_SECTION_CUSTOM ? buildCustomFilterText(session) : buildStatusText(session),
           ].join('\n'),
           session,
-          KEYBOARD_SECTION_CUSTOM,
+          nextSection,
         )
         return
       }
@@ -722,7 +775,7 @@ export async function startStandaloneTelegramFreshBot() {
         awaitingBrandMonth: false,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
+      await respondWithControl(message, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
       return
     }
 
@@ -735,7 +788,7 @@ export async function startStandaloneTelegramFreshBot() {
         awaitingBrandMonth: true,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildBrandMonthsText(session), session, KEYBOARD_SECTION_BRAND_MONTHS)
+      await respondWithControl(message, buildBrandMonthsText(session), session, KEYBOARD_SECTION_BRAND_MONTHS)
       return
     }
 
@@ -762,8 +815,8 @@ export async function startStandaloneTelegramFreshBot() {
       })
       await stateStore.flush()
       wakeParserLoop()
-      await sendControlMessage(
-        chatId,
+      await respondWithControl(
+        message,
         [
           `✅ Добавлен фильтр: ${getBrandSelectionLabel(nextSelections.at(-1))}.`,
           '',
@@ -792,8 +845,8 @@ export async function startStandaloneTelegramFreshBot() {
       })
       await stateStore.flush()
       wakeParserLoop()
-      await sendControlMessage(
-        chatId,
+      await respondWithControl(
+        message,
         [
           `✅ Добавлено ссылок: ${parsedCustomFilters.length}.`,
           '',
@@ -811,8 +864,8 @@ export async function startStandaloneTelegramFreshBot() {
         currentSection: KEYBOARD_SECTION_CUSTOM,
       })
       await stateStore.flush()
-      await sendControlMessage(
-        chatId,
+      await respondWithControl(
+        message,
         [
           '⚠️ Не смог разобрать ссылку.',
           'Пришлите одну или несколько Encar-ссылок либо raw `q=(And...)`.',
