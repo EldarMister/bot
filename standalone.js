@@ -7,18 +7,17 @@ import {
   FILTER_MODE_BRAND,
   FILTER_MODE_CUSTOM,
   FILTER_MODE_SCOPE,
-  PARSE_SCOPE_ALL,
-  PARSE_SCOPE_DOMESTIC,
-  PARSE_SCOPE_GERMAN,
-  PARSE_SCOPE_IMPORTED,
-  PARSE_SCOPE_JAPANESE,
+  MONTH_OPTIONS,
+  YEAR_OPTIONS,
   getBrandPreset,
+  getBrandSelectionLabel,
+  getCustomFilterLabel,
   getFilterSummary,
-  getScopeLabel,
   normalizeBrandKey,
+  normalizeBrandSelections,
+  normalizeCustomFilters,
   normalizeFilterMode,
-  normalizeParseScope,
-  parseCustomFilterInput,
+  parseCustomFilterInputs,
 } from './encarFilters.js'
 import { LocalStateStore } from './stateStore.js'
 import { createStandaloneEncarClient } from './encarStandaloneClient.js'
@@ -33,25 +32,20 @@ const DEFAULT_STATE_FILE = path.join(__dirname, 'data', 'state.json')
 const DEFAULT_ACTIVE_DELAY_MS = 750
 const DEFAULT_IDLE_DELAY_MS = 1500
 
-const BUTTON_START = '\uD83D\uDE80 \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c \u043f\u0430\u0440\u0441\u0438\u043d\u0433'
-const BUTTON_STOP = '\u23F9\uFE0F \u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u043F\u0430\u0440\u0441\u0438\u043D\u0433'
-const BUTTON_STATUS = '\uD83D\uDCCA \u0421\u0442\u0430\u0442\u0443\u0441'
-const BUTTON_FILTERS = '\uD83C\uDFAF \u0424\u0438\u043B\u044C\u0442\u0440\u044B'
-const BUTTON_BRAND_FILTERS = '\uD83C\uDFF7\uFE0F \u0424\u0438\u043B\u044C\u0442\u0440 \u043F\u043E \u043C\u0430\u0440\u043A\u0435'
-const BUTTON_CUSTOM_FILTER = '\uD83D\uDD17 \u0421\u0432\u043E\u0439 \u0444\u0438\u043B\u044C\u0442\u0440'
-const BUTTON_BACK = '\u2B05\uFE0F \u041D\u0430\u0437\u0430\u0434'
-
-const FILTER_BUTTONS = Object.freeze({
-  [PARSE_SCOPE_ALL]: '\uD83D\uDE97 \u0412\u0441\u0435 \u043c\u0430\u0448\u0438\u043d\u044b',
-  [PARSE_SCOPE_DOMESTIC]: '\uD83C\uDDF0\uD83C\uDDF7 \u041A\u043E\u0440\u0435\u0439\u0441\u043A\u0438\u0435',
-  [PARSE_SCOPE_IMPORTED]: '\uD83C\uDF0D \u0412\u0441\u0435 \u0438\u043C\u043F\u043E\u0440\u0442\u043D\u044B\u0435',
-  [PARSE_SCOPE_JAPANESE]: '\uD83C\uDDEF\uD83C\uDDF5 \u042F\u043F\u043E\u043D\u0441\u043A\u0438\u0435',
-  [PARSE_SCOPE_GERMAN]: '\uD83C\uDDE9\uD83C\uDDEA \u041D\u0435\u043C\u0435\u0446\u043A\u0438\u0435',
-})
+const BUTTON_START = '🚀 Запустить парсинг'
+const BUTTON_STOP = '⏹️ Остановить парсинг'
+const BUTTON_STATUS = '📊 Статус'
+const BUTTON_FILTERS = '🎯 Фильтры'
+const BUTTON_BRAND_FILTERS = '🏷️ Фильтр по марке'
+const BUTTON_CUSTOM_FILTER = '🔗 Свой фильтр'
+const BUTTON_ADD_LINK = '➕ Добавить ссылку'
+const BUTTON_BACK = '⬅️ Назад'
 
 const KEYBOARD_SECTION_MAIN = 'main'
 const KEYBOARD_SECTION_FILTERS = 'filters'
 const KEYBOARD_SECTION_BRANDS = 'brands'
+const KEYBOARD_SECTION_BRAND_YEARS = 'brand_years'
+const KEYBOARD_SECTION_BRAND_MONTHS = 'brand_months'
 const KEYBOARD_SECTION_CUSTOM = 'custom'
 
 function cleanText(value) {
@@ -75,35 +69,67 @@ function normalizeChatId(value) {
   return Number.isFinite(parsed) ? String(parsed) : ''
 }
 
+function getSessionBrandSelections(session = {}) {
+  return normalizeBrandSelections(session?.brandSelections, session?.brandKey)
+}
+
+function getSessionCustomFilters(session = {}) {
+  return normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
+}
+
 function formatCurrentFilterLabel(session) {
   return getFilterSummary(session)
 }
 
-function getFilterButtonLabel(parseScope, activeScope = '') {
-  const baseLabel = FILTER_BUTTONS[parseScope] || FILTER_BUTTONS[PARSE_SCOPE_ALL]
-  return parseScope === normalizeParseScope(activeScope)
-    ? `\u2705 ${baseLabel}`
-    : baseLabel
+function buildButtonRows(buttons = [], columns = 2) {
+  const rows = []
+  for (let index = 0; index < buttons.length; index += columns) {
+    rows.push(buttons.slice(index, index + columns).map((text) => ({ text })))
+  }
+  return rows
 }
 
-function getBrandButtonLabel(brandKey, activeSession = null) {
+function getBrandButtonLabel(brandKey, session = {}) {
   const preset = getBrandPreset(brandKey)
   const baseLabel = preset?.button || preset?.label || brandKey
-  const isActive = normalizeFilterMode(activeSession?.filterMode) === FILTER_MODE_BRAND
-    && normalizeBrandKey(activeSession?.brandKey) === normalizeBrandKey(brandKey)
-  return isActive ? `\u2705 ${baseLabel}` : baseLabel
+  const isSelected = getSessionBrandSelections(session)
+    .some((selection) => normalizeBrandKey(selection?.brandKey) === normalizeBrandKey(brandKey))
+  return isSelected ? `✅ ${baseLabel}` : baseLabel
 }
 
-function getBrandFiltersButtonLabel(session = null) {
+function getBrandFiltersButtonLabel(session = {}) {
   return normalizeFilterMode(session?.filterMode) === FILTER_MODE_BRAND
-    ? `\u2705 ${BUTTON_BRAND_FILTERS}`
+    && getSessionBrandSelections(session).length
+    ? `✅ ${BUTTON_BRAND_FILTERS}`
     : BUTTON_BRAND_FILTERS
 }
 
-function getCustomFilterButtonLabel(session = null) {
+function getCustomFilterButtonLabel(session = {}) {
   return normalizeFilterMode(session?.filterMode) === FILTER_MODE_CUSTOM
-    ? `\u2705 ${BUTTON_CUSTOM_FILTER}`
+    && getSessionCustomFilters(session).length
+    ? `✅ ${BUTTON_CUSTOM_FILTER}`
     : BUTTON_CUSTOM_FILTER
+}
+
+function getDeleteLinkButtonLabel(index) {
+  return `🗑 ${index}`
+}
+
+function parseDeleteLinkButton(text) {
+  const match = cleanText(text).match(/^🗑\s*(\d+)$/u)
+  if (!match) return 0
+  const parsed = Number.parseInt(match[1], 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function parseYearButton(text) {
+  const parsed = Number.parseInt(cleanText(text), 10)
+  return YEAR_OPTIONS.includes(parsed) ? parsed : 0
+}
+
+function parseMonthButton(text) {
+  const parsed = Number.parseInt(cleanText(text), 10)
+  return MONTH_OPTIONS.includes(parsed) ? parsed : 0
 }
 
 function formatInteger(value) {
@@ -114,7 +140,7 @@ function formatInteger(value) {
 
 function formatMileage(value) {
   const formatted = formatInteger(value)
-  return formatted ? `${formatted} \u043A\u043C` : ''
+  return formatted ? `${formatted} км` : ''
 }
 
 function formatKrw(value) {
@@ -129,16 +155,10 @@ function getTelegramApiUrl(botToken, method) {
 function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   const isActive = Boolean(session?.isActive)
   const toggleButtonLabel = isActive ? BUTTON_STOP : BUTTON_START
-  const activeScope = normalizeFilterMode(session?.filterMode) === FILTER_MODE_SCOPE
-    ? normalizeParseScope(session?.parseScope)
-    : ''
 
   if (section === KEYBOARD_SECTION_FILTERS) {
     return {
       keyboard: [
-        [{ text: getFilterButtonLabel(PARSE_SCOPE_ALL, activeScope) }, { text: getFilterButtonLabel(PARSE_SCOPE_DOMESTIC, activeScope) }],
-        [{ text: getFilterButtonLabel(PARSE_SCOPE_IMPORTED, activeScope) }, { text: getFilterButtonLabel(PARSE_SCOPE_JAPANESE, activeScope) }],
-        [{ text: getFilterButtonLabel(PARSE_SCOPE_GERMAN, activeScope) }],
         [{ text: getBrandFiltersButtonLabel(session) }, { text: getCustomFilterButtonLabel(session) }],
         [{ text: BUTTON_BACK }],
       ],
@@ -148,15 +168,32 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   }
 
   if (section === KEYBOARD_SECTION_BRANDS) {
-    const rows = []
-    for (let index = 0; index < BRAND_PRESETS.length; index += 2) {
-      const current = BRAND_PRESETS[index]
-      const next = BRAND_PRESETS[index + 1]
-      rows.push([
-        { text: getBrandButtonLabel(current.key, session) },
-        ...(next ? [{ text: getBrandButtonLabel(next.key, session) }] : []),
-      ])
+    const rows = buildButtonRows(
+      BRAND_PRESETS.map((preset) => getBrandButtonLabel(preset.key, session)),
+      3,
+    )
+    rows.push([{ text: BUTTON_BACK }])
+
+    return {
+      keyboard: rows,
+      resize_keyboard: true,
+      one_time_keyboard: false,
     }
+  }
+
+  if (section === KEYBOARD_SECTION_BRAND_YEARS) {
+    const rows = buildButtonRows(YEAR_OPTIONS.map((year) => String(year)), 3)
+    rows.push([{ text: BUTTON_BACK }])
+
+    return {
+      keyboard: rows,
+      resize_keyboard: true,
+      one_time_keyboard: false,
+    }
+  }
+
+  if (section === KEYBOARD_SECTION_BRAND_MONTHS) {
+    const rows = buildButtonRows(MONTH_OPTIONS.map((month) => String(month).padStart(2, '0')), 3)
     rows.push([{ text: BUTTON_BACK }])
 
     return {
@@ -167,8 +204,13 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   }
 
   if (section === KEYBOARD_SECTION_CUSTOM) {
+    const deleteButtons = getSessionCustomFilters(session)
+      .map((_, index) => getDeleteLinkButtonLabel(index + 1))
+
     return {
       keyboard: [
+        [{ text: BUTTON_ADD_LINK }],
+        ...buildButtonRows(deleteButtons, 3),
         [{ text: BUTTON_BACK }],
       ],
       resize_keyboard: true,
@@ -186,31 +228,58 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   }
 }
 
-function buildStatusText(session) {
-  const isActive = Boolean(session?.isActive)
+function buildBrandSelectionsLines(session = {}) {
+  const selections = getSessionBrandSelections(session)
+  if (!selections.length) {
+    return ['🚗 По умолчанию бот ищет по всем машинам.']
+  }
 
   return [
-    '\uD83E\uDD16 \u041F\u0430\u0440\u0441\u0438\u043D\u0433 Encar \u0447\u0435\u0440\u0435\u0437 Telegram',
-    `\uD83D\uDCCA \u0421\u0442\u0430\u0442\u0443\u0441: ${isActive ? '\uD83D\uDFE2 \u0432\u043A\u043B\u044E\u0447\u0435\u043D' : '\uD83D\uDD34 \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D'}`,
-    `\u2705 \u0422\u0435\u043A\u0443\u0449\u0438\u0439 \u0444\u0438\u043B\u044C\u0442\u0440: ${formatCurrentFilterLabel(session)}`,
-    `\uD83D\uDD18 \u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435: ${isActive ? BUTTON_STOP : BUTTON_START}`,
-  ].join('\n')
+    '🏷️ Выбранные марки:',
+    ...selections.map((selection, index) => `${index + 1}. ${getBrandSelectionLabel(selection)}`),
+  ]
+}
+
+function buildCustomFiltersLines(session = {}) {
+  const filters = getSessionCustomFilters(session)
+  if (!filters.length) {
+    return ['🔗 Своих Encar-ссылок пока нет.']
+  }
+
+  return [
+    '🔗 Сохранённые ссылки:',
+    ...filters.map((filter, index) => getCustomFilterLabel(filter, index + 1)),
+  ]
+}
+
+function buildStatusText(session) {
+  const isActive = Boolean(session?.isActive)
+  const filterMode = normalizeFilterMode(session?.filterMode)
+  const lines = [
+    '🤖 Парсинг Encar через Telegram',
+    `📊 Статус: ${isActive ? '🟢 включен' : '🔴 выключен'}`,
+    `✅ Текущий фильтр: ${formatCurrentFilterLabel(session)}`,
+    '',
+  ]
+
+  if (filterMode === FILTER_MODE_BRAND) {
+    lines.push(...buildBrandSelectionsLines(session))
+  } else if (filterMode === FILTER_MODE_CUSTOM) {
+    lines.push(...buildCustomFiltersLines(session))
+  } else {
+    lines.push('🚗 По умолчанию бот ищет по всем машинам.')
+  }
+
+  lines.push('', `🔘 Действие: ${isActive ? BUTTON_STOP : BUTTON_START}`)
+  return lines.join('\n')
 }
 
 function buildFiltersText(session) {
-  const activeScope = normalizeFilterMode(session?.filterMode) === FILTER_MODE_SCOPE
-    ? normalizeParseScope(session?.parseScope)
-    : ''
-
   return [
-    '\uD83C\uDFAF \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0444\u0438\u043B\u044C\u0442\u0440:',
-    `\u2705 \u0421\u0435\u0439\u0447\u0430\u0441 \u0430\u043A\u0442\u0438\u0432\u0435\u043D: ${formatCurrentFilterLabel(session)}`,
+    '🎯 Настройте фильтр:',
+    `✅ Сейчас активно: ${formatCurrentFilterLabel(session)}`,
     '',
-    `${getFilterButtonLabel(PARSE_SCOPE_ALL, activeScope)}`,
-    `${getFilterButtonLabel(PARSE_SCOPE_DOMESTIC, activeScope)}`,
-    `${getFilterButtonLabel(PARSE_SCOPE_IMPORTED, activeScope)}`,
-    `${getFilterButtonLabel(PARSE_SCOPE_JAPANESE, activeScope)}`,
-    `${getFilterButtonLabel(PARSE_SCOPE_GERMAN, activeScope)}`,
+    '🚗 Если ничего не выбрать, бот будет искать по всем машинам.',
     '',
     `${getBrandFiltersButtonLabel(session)}`,
     `${getCustomFilterButtonLabel(session)}`,
@@ -218,39 +287,63 @@ function buildFiltersText(session) {
 }
 
 function buildBrandsText(session) {
-  const activeBrand = getBrandPreset(session?.brandKey)
-
   return [
-    '\uD83C\uDFF7\uFE0F \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043C\u0430\u0440\u043A\u0443:',
-    `\u2705 \u0421\u0435\u0439\u0447\u0430\u0441 \u0430\u043A\u0442\u0438\u0432\u0435\u043D: ${activeBrand ? `Марка: ${activeBrand.label}` : formatCurrentFilterLabel(session)}`,
+    '🏷️ Выберите марку.',
+    'После выбора марки бот попросит год, затем месяц.',
+    'Можно добавить несколько марок подряд.',
     '',
-    ...BRAND_PRESETS.map((preset) => getBrandButtonLabel(preset.key, session)),
+    ...buildBrandSelectionsLines(session),
+  ].join('\n')
+}
+
+function buildBrandYearsText(session) {
+  const preset = getBrandPreset(session?.pendingBrandKey)
+  return [
+    `📅 Выберите год для ${preset?.label || 'марки'}.`,
+    'Диапазон: 2000-2026.',
+  ].join('\n')
+}
+
+function buildBrandMonthsText(session) {
+  const preset = getBrandPreset(session?.pendingBrandKey)
+  return [
+    `🗓️ Выберите месяц для ${preset?.label || 'марки'}.`,
+    `Год: ${session?.pendingBrandYear || '-'}.`,
   ].join('\n')
 }
 
 function buildCustomFilterText(session) {
   return [
-    '\uD83D\uDD17 \u0421\u0432\u043E\u0439 \u0444\u0438\u043B\u044C\u0442\u0440 Encar',
-    '\u041E\u0442\u043F\u0440\u0430\u0432\u044C\u0442\u0435 \u0441\u0441\u044B\u043B\u043A\u0443 \u043D\u0430 \u0444\u0438\u043B\u044C\u0442\u0440 Encar, \u0438 \u0431\u043E\u0442 \u0431\u0443\u0434\u0435\u0442 \u0438\u0441\u043A\u0430\u0442\u044C \u0441\u0432\u0435\u0436\u0438\u0435 \u043E\u0431\u044A\u044F\u0432\u043B\u0435\u043D\u0438\u044F \u0438\u043C\u0435\u043D\u043D\u043E \u043F\u043E \u043D\u0435\u043C\u0443.',
-    '\u041C\u043E\u0436\u043D\u043E \u043F\u0440\u0438\u0441\u043B\u0430\u0442\u044C \u043F\u043E\u043B\u043D\u0443\u044E Encar-\u0441\u0441\u044B\u043B\u043A\u0443 \u0438\u043B\u0438 raw `q=(And...)`.',
+    '🔗 Свой фильтр Encar',
+    'Нажмите «➕ Добавить ссылку», затем пришлите одну или несколько ссылок Encar.',
+    'Каждая ссылка будет сохранена отдельно. Ненужные можно удалить кнопками ниже.',
     '',
-    `\uD83D\uDCBE \u0422\u0435\u043A\u0443\u0449\u0438\u0439 \u0444\u0438\u043B\u044C\u0442\u0440: ${formatCurrentFilterLabel(session)}`,
-    session?.customFilterUrl ? `\uD83D\uDD17 \u0421\u043E\u0445\u0440\u0430\u043D\u0451\u043D\u043D\u0430\u044F \u0441\u0441\u044B\u043B\u043A\u0430: ${cleanText(session.customFilterUrl)}` : '',
-  ].filter(Boolean).join('\n')
+    ...buildCustomFiltersLines(session),
+  ].join('\n')
+}
+
+function buildAwaitingCustomFilterText(session) {
+  return [
+    '➕ Пришлите одну или несколько Encar-ссылок.',
+    'Можно отправить ссылки по одной или несколько ссылок одним сообщением.',
+    'Также можно прислать raw `q=(And...)`.',
+    '',
+    ...buildCustomFiltersLines(session),
+  ].join('\n')
 }
 
 function buildListingMessage(listing) {
   return [
-    '\uD83C\uDD95 \u0421\u0432\u0435\u0436\u0435\u0435 \u043E\u0431\u044A\u044F\u0432\u043B\u0435\u043D\u0438\u0435',
-    `\uD83D\uDE98 ${cleanText(listing?.name) || '-'}`,
-    `\uD83D\uDCE6 \u041A\u043E\u043C\u043F\u043B\u0435\u043A\u0442\u0430\u0446\u0438\u044F: ${cleanText(listing?.trimLevel) || '-'}`,
-    `\u26FD \u0422\u0438\u043F \u0442\u043E\u043F\u043B\u0438\u0432\u0430: ${cleanText(listing?.fuelType) || '-'}`,
-    `\uD83D\uDCC5 \u0413\u043E\u0434: ${cleanText(listing?.year) || '-'}`,
-    `\uD83D\uDEE3 \u041F\u0440\u043E\u0431\u0435\u0433: ${formatMileage(listing?.mileage) || '-'}`,
-    `\uD83D\uDCB0 \u0426\u0435\u043D\u0430: ${formatKrw(listing?.priceKrw) || '-'}`,
-    `\uD83D\uDC40 \u041F\u0440\u043E\u0441\u043C\u043E\u0442\u0440\u044B: ${Math.max(0, Number(listing?.manage?.viewCount) || 0)}`,
-    `\uD83D\uDCDE \u0417\u0432\u043E\u043D\u043A\u0438: ${Math.max(0, Number(listing?.manage?.callCount) || 0)}`,
-    `\uD83D\uDD17 Encar: ${cleanText(listing?.encarUrl) || '-'}`,
+    '🆕 Свежее объявление',
+    `🚘 ${cleanText(listing?.name) || '-'}`,
+    `📦 Комплектация: ${cleanText(listing?.trimLevel) || '-'}`,
+    `⛽ Тип топлива: ${cleanText(listing?.fuelType) || '-'}`,
+    `📅 Год: ${cleanText(listing?.year) || '-'}`,
+    `🛣 Пробег: ${formatMileage(listing?.mileage) || '-'}`,
+    `💰 Цена: ${formatKrw(listing?.priceKrw) || '-'}`,
+    `👀 Просмотры: ${Math.max(0, Number(listing?.manage?.viewCount) || 0)}`,
+    `📞 Звонки: ${Math.max(0, Number(listing?.manage?.callCount) || 0)}`,
+    `🔗 Encar: ${cleanText(listing?.encarUrl) || '-'}`,
   ].join('\n')
 }
 
@@ -263,7 +356,7 @@ function getSubscriptionCommand(text) {
 }
 
 function normalizeIncomingText(text) {
-  return cleanText(text).replace(/^\u2705\s*/u, '')
+  return cleanText(text).replace(/^✅\s*/u, '')
 }
 
 function shouldDeactivateChat(error) {
@@ -349,122 +442,288 @@ export async function startStandaloneTelegramFreshBot() {
     const chatId = normalizeChatId(message?.chat?.id)
     if (!chatId) return
 
-    const rawText = cleanText(message?.text)
+    const rawText = String(message?.text || '')
     const text = normalizeIncomingText(rawText)
     const currentSession = stateStore.getSession(chatId)
     const command = getSubscriptionCommand(text)
     const selectedBrand = BRAND_PRESETS.find((preset) => preset.button === text || preset.label === text) || null
+    const selectedYear = currentSession?.awaitingBrandYear ? parseYearButton(text) : 0
+    const selectedMonth = currentSession?.awaitingBrandMonth ? parseMonthButton(text) : 0
+    const deleteCustomIndex = parseDeleteLinkButton(text)
+    const parsedCustomFilters = parseCustomFilterInputs(rawText)
+
+    const commonUserFields = {
+      firstName: cleanText(message?.from?.first_name),
+      lastName: cleanText(message?.from?.last_name),
+      username: cleanText(message?.from?.username),
+    }
 
     if (command === 'start') {
       const session = stateStore.upsertSession(chatId, {
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_MAIN,
       })
       await stateStore.flush()
-      await sendControlMessage(chatId, buildStatusText(session), session)
+      await sendControlMessage(chatId, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
       return
     }
 
     if (command === 'stop' || text === BUTTON_STOP) {
       const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
         isActive: false,
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        currentSection: KEYBOARD_SECTION_MAIN,
       })
       await stateStore.flush()
       wakeParserLoop()
       await sendControlMessage(
         chatId,
         [
-          '\u23F9\uFE0F \u041F\u0430\u0440\u0441\u0438\u043D\u0433 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D.',
-          `\uD83C\uDFAF \u0424\u0438\u043B\u044C\u0442\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D: ${formatCurrentFilterLabel(session)}.`,
+          '⏹️ Парсинг остановлен.',
+          `🎯 Фильтр сохранён: ${formatCurrentFilterLabel(session)}.`,
         ].join('\n'),
         session,
+        KEYBOARD_SECTION_MAIN,
       )
       return
     }
 
     if (text === BUTTON_START) {
       const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
         isActive: true,
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        currentSection: KEYBOARD_SECTION_MAIN,
       })
       await stateStore.flush()
       wakeParserLoop()
       await sendControlMessage(
         chatId,
         [
-          '\uD83D\uDE80 \u041F\u0430\u0440\u0441\u0438\u043D\u0433 \u0437\u0430\u043F\u0443\u0449\u0435\u043D.',
-          `\uD83C\uDFAF \u0424\u0438\u043B\u044C\u0442\u0440: ${formatCurrentFilterLabel(session)}.`,
-          '\u2728 \u041F\u043E\u0438\u0441\u043A \u0431\u0443\u0434\u0435\u0442 \u0438\u0434\u0442\u0438 \u043D\u0435\u043F\u0440\u0435\u0440\u044B\u0432\u043D\u043E, \u043F\u043E\u043A\u0430 \u0432\u044B \u043D\u0435 \u043D\u0430\u0436\u043C\u0451\u0442\u0435 \u0441\u0442\u043E\u043F.',
+          '🚀 Парсинг запущен.',
+          `🎯 Фильтр: ${formatCurrentFilterLabel(session)}.`,
+          '🔄 Поиск будет идти непрерывно, пока вы не нажмёте стоп.',
         ].join('\n'),
         session,
+        KEYBOARD_SECTION_MAIN,
       )
       return
     }
 
     if (text === BUTTON_STATUS) {
-      await sendControlMessage(chatId, buildStatusText(currentSession), currentSession)
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_MAIN,
+      })
+      await stateStore.flush()
+      await sendControlMessage(chatId, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
       return
     }
 
     if (text === BUTTON_FILTERS) {
-      await sendControlMessage(chatId, buildFiltersText(currentSession), currentSession, KEYBOARD_SECTION_FILTERS)
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_FILTERS,
+        awaitingCustomFilter: false,
+      })
+      await stateStore.flush()
+      await sendControlMessage(chatId, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
       return
     }
 
     if (text === BUTTON_BRAND_FILTERS) {
-      await sendControlMessage(chatId, buildBrandsText(currentSession), currentSession, KEYBOARD_SECTION_BRANDS)
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_BRANDS,
+        awaitingCustomFilter: false,
+        awaitingBrandYear: false,
+        awaitingBrandMonth: false,
+        pendingBrandKey: '',
+        pendingBrandYear: 0,
+      })
+      await stateStore.flush()
+      await sendControlMessage(chatId, buildBrandsText(session), session, KEYBOARD_SECTION_BRANDS)
       return
     }
 
     if (text === BUTTON_CUSTOM_FILTER) {
       const session = stateStore.upsertSession(chatId, {
-        awaitingCustomFilter: true,
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_CUSTOM,
+        awaitingCustomFilter: false,
+        awaitingBrandYear: false,
+        awaitingBrandMonth: false,
+        pendingBrandKey: '',
+        pendingBrandYear: 0,
       })
       await stateStore.flush()
       await sendControlMessage(chatId, buildCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
       return
     }
 
-    if (text === BUTTON_BACK) {
-      let session = currentSession
-      if (currentSession?.awaitingCustomFilter) {
-        session = stateStore.upsertSession(chatId, { awaitingCustomFilter: false })
-        await stateStore.flush()
-      }
-      await sendControlMessage(chatId, buildStatusText(session), session)
+    if (text === BUTTON_ADD_LINK) {
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_CUSTOM,
+        awaitingCustomFilter: true,
+      })
+      await stateStore.flush()
+      await sendControlMessage(chatId, buildAwaitingCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
       return
+    }
+
+    if (text === BUTTON_BACK) {
+      if (currentSession?.awaitingBrandMonth || currentSession?.currentSection === KEYBOARD_SECTION_BRAND_MONTHS) {
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          currentSection: KEYBOARD_SECTION_BRAND_YEARS,
+          awaitingBrandMonth: false,
+          awaitingBrandYear: true,
+        })
+        await stateStore.flush()
+        await sendControlMessage(chatId, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
+        return
+      }
+
+      if (currentSession?.awaitingBrandYear || currentSession?.currentSection === KEYBOARD_SECTION_BRAND_YEARS) {
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          currentSection: KEYBOARD_SECTION_BRANDS,
+          awaitingBrandYear: false,
+          pendingBrandYear: 0,
+          pendingBrandKey: '',
+        })
+        await stateStore.flush()
+        await sendControlMessage(chatId, buildBrandsText(session), session, KEYBOARD_SECTION_BRANDS)
+        return
+      }
+
+      if (currentSession?.awaitingCustomFilter) {
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          currentSection: KEYBOARD_SECTION_CUSTOM,
+          awaitingCustomFilter: false,
+        })
+        await stateStore.flush()
+        await sendControlMessage(chatId, buildCustomFilterText(session), session, KEYBOARD_SECTION_CUSTOM)
+        return
+      }
+
+      if (currentSession?.currentSection === KEYBOARD_SECTION_BRANDS || currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM) {
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          currentSection: KEYBOARD_SECTION_FILTERS,
+        })
+        await stateStore.flush()
+        await sendControlMessage(chatId, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
+        return
+      }
+
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: currentSession?.currentSection === KEYBOARD_SECTION_FILTERS
+          ? KEYBOARD_SECTION_MAIN
+          : KEYBOARD_SECTION_FILTERS,
+      })
+      await stateStore.flush()
+      if (session.currentSection === KEYBOARD_SECTION_FILTERS) {
+        await sendControlMessage(chatId, buildFiltersText(session), session, KEYBOARD_SECTION_FILTERS)
+      } else {
+        await sendControlMessage(chatId, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
+      }
+      return
+    }
+
+    if (deleteCustomIndex > 0) {
+      const currentCustomFilters = getSessionCustomFilters(currentSession)
+      if (deleteCustomIndex <= currentCustomFilters.length) {
+        const nextCustomFilters = currentCustomFilters.filter((_, index) => index !== deleteCustomIndex - 1)
+        const nextFilterMode = nextCustomFilters.length
+          ? FILTER_MODE_CUSTOM
+          : getSessionBrandSelections(currentSession).length
+            ? FILTER_MODE_BRAND
+            : FILTER_MODE_SCOPE
+
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          filterMode: nextFilterMode,
+          customFilters: nextCustomFilters,
+          currentSection: KEYBOARD_SECTION_CUSTOM,
+          awaitingCustomFilter: false,
+          customFilterUrl: nextCustomFilters.at(-1)?.url || '',
+          customFilterQuery: nextCustomFilters.at(-1)?.query || '',
+        })
+        await stateStore.flush()
+        wakeParserLoop()
+        await sendControlMessage(
+          chatId,
+          [
+            `🗑 Ссылка ${deleteCustomIndex} удалена.`,
+            '',
+            buildCustomFilterText(session),
+          ].join('\n'),
+          session,
+          KEYBOARD_SECTION_CUSTOM,
+        )
+        return
+      }
     }
 
     if (selectedBrand) {
       const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_BRAND_YEARS,
+        pendingBrandKey: selectedBrand.key,
+        pendingBrandYear: 0,
+        awaitingBrandYear: true,
+        awaitingBrandMonth: false,
+      })
+      await stateStore.flush()
+      await sendControlMessage(chatId, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
+      return
+    }
+
+    if (selectedYear) {
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_BRAND_MONTHS,
+        pendingBrandYear: selectedYear,
+        awaitingBrandYear: false,
+        awaitingBrandMonth: true,
+      })
+      await stateStore.flush()
+      await sendControlMessage(chatId, buildBrandMonthsText(session), session, KEYBOARD_SECTION_BRAND_MONTHS)
+      return
+    }
+
+    if (selectedMonth && currentSession?.pendingBrandKey && currentSession?.pendingBrandYear) {
+      const nextSelections = normalizeBrandSelections([
+        ...getSessionBrandSelections(currentSession),
+        {
+          brandKey: currentSession.pendingBrandKey,
+          year: currentSession.pendingBrandYear,
+          month: selectedMonth,
+        },
+      ])
+
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
         filterMode: FILTER_MODE_BRAND,
-        brandKey: selectedBrand.key,
-        parseScope: selectedBrand.scope,
-        customFilterUrl: '',
-        customFilterQuery: '',
-        awaitingCustomFilter: false,
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        brandSelections: nextSelections,
+        brandKey: currentSession.pendingBrandKey,
+        currentSection: KEYBOARD_SECTION_BRANDS,
+        awaitingBrandYear: false,
+        awaitingBrandMonth: false,
+        pendingBrandKey: '',
+        pendingBrandYear: 0,
       })
       await stateStore.flush()
       wakeParserLoop()
       await sendControlMessage(
         chatId,
         [
-          `\u2705 \u041C\u0430\u0440\u043A\u0430 \u0432\u044B\u0431\u0440\u0430\u043D\u0430: ${selectedBrand.label}.`,
-          session?.isActive
-            ? '\uD83D\uDE9A \u041D\u043E\u0432\u044B\u0435 \u043E\u0431\u044A\u044F\u0432\u043B\u0435\u043D\u0438\u044F \u0441\u0440\u0430\u0437\u0443 \u043F\u043E\u0439\u0434\u0443\u0442 \u043F\u043E \u044D\u0442\u043E\u0439 \u043C\u0430\u0440\u043A\u0435.'
-            : '\uD83D\uDCBE \u041C\u0430\u0440\u043E\u0447\u043D\u044B\u0439 \u0444\u0438\u043B\u044C\u0442\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D.',
+          `✅ Добавлен фильтр: ${getBrandSelectionLabel(nextSelections.at(-1))}.`,
+          '',
+          buildBrandsText(session),
         ].join('\n'),
         session,
         KEYBOARD_SECTION_BRANDS,
@@ -472,72 +731,52 @@ export async function startStandaloneTelegramFreshBot() {
       return
     }
 
-    if (currentSession?.awaitingCustomFilter) {
-      const customFilter = parseCustomFilterInput(rawText)
-      if (!customFilter?.query) {
-        await sendControlMessage(
-          chatId,
-          [
-            '\u26A0\uFE0F \u041D\u0435 \u0441\u043C\u043E\u0433 \u0440\u0430\u0437\u043E\u0431\u0440\u0430\u0442\u044C \u0444\u0438\u043B\u044C\u0442\u0440.',
-            '\u041F\u0440\u0438\u0448\u043B\u0438\u0442\u0435 \u043F\u043E\u043B\u043D\u0443\u044E Encar-\u0441\u0441\u044B\u043B\u043A\u0443 \u0441 `q=` \u0438\u043B\u0438 raw query \u0432\u0438\u0434\u0430 `(And...)`.',
-          ].join('\n'),
-          currentSession,
-          KEYBOARD_SECTION_CUSTOM,
-        )
-        return
-      }
+    if (parsedCustomFilters.length && (currentSession?.awaitingCustomFilter || /encar\.com|q=\(|^\s*\(/i.test(rawText))) {
+      const nextCustomFilters = normalizeCustomFilters([
+        ...getSessionCustomFilters(currentSession),
+        ...parsedCustomFilters,
+      ])
 
       const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
         filterMode: FILTER_MODE_CUSTOM,
-        brandKey: '',
-        customFilterUrl: customFilter.url || rawText,
-        customFilterQuery: customFilter.query,
+        customFilters: nextCustomFilters,
+        customFilterUrl: nextCustomFilters.at(-1)?.url || '',
+        customFilterQuery: nextCustomFilters.at(-1)?.query || '',
         awaitingCustomFilter: false,
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        currentSection: KEYBOARD_SECTION_CUSTOM,
       })
       await stateStore.flush()
       wakeParserLoop()
       await sendControlMessage(
         chatId,
         [
-          '\u2705 \u0421\u0432\u043E\u0439 \u0444\u0438\u043B\u044C\u0442\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D.',
-          session?.customFilterUrl ? `\uD83D\uDD17 ${session.customFilterUrl}` : '',
-          session?.isActive
-            ? '\uD83D\uDE9A \u041D\u043E\u0432\u044B\u0435 \u043E\u0431\u044A\u044F\u0432\u043B\u0435\u043D\u0438\u044F \u0442\u0435\u043F\u0435\u0440\u044C \u043F\u043E\u0439\u0434\u0443\u0442 \u043F\u043E \u0432\u0430\u0448\u0435\u0439 Encar-\u0441\u0441\u044B\u043B\u043A\u0435.'
-            : '\uD83D\uDCBE \u0424\u0438\u043B\u044C\u0442\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D. \u0422\u0435\u043F\u0435\u0440\u044C \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0442\u044C \u043F\u0430\u0440\u0441\u0438\u043D\u0433.',
-        ].filter(Boolean).join('\n'),
+          `✅ Добавлено ссылок: ${parsedCustomFilters.length}.`,
+          '',
+          buildCustomFilterText(session),
+        ].join('\n'),
         session,
+        KEYBOARD_SECTION_CUSTOM,
       )
       return
     }
 
-    const filterScope = Object.entries(FILTER_BUTTONS).find(([, label]) => label === text)?.[0] || ''
-    if (filterScope) {
+    if (currentSession?.awaitingCustomFilter) {
       const session = stateStore.upsertSession(chatId, {
-        filterMode: FILTER_MODE_SCOPE,
-        parseScope: filterScope,
-        brandKey: '',
-        customFilterUrl: '',
-        customFilterQuery: '',
-        awaitingCustomFilter: false,
-        firstName: cleanText(message?.from?.first_name),
-        lastName: cleanText(message?.from?.last_name),
-        username: cleanText(message?.from?.username),
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_CUSTOM,
       })
       await stateStore.flush()
-      wakeParserLoop()
       await sendControlMessage(
         chatId,
         [
-          `\u2705 \u0424\u0438\u043B\u044C\u0442\u0440 \u0432\u044B\u0431\u0440\u0430\u043D: ${getScopeLabel(filterScope)}.`,
-          session?.isActive
-            ? '\uD83D\uDE9A \u041D\u043E\u0432\u044B\u0435 \u043E\u0431\u044A\u044F\u0432\u043B\u0435\u043D\u0438\u044F \u0441\u0440\u0430\u0437\u0443 \u043F\u043E\u0439\u0434\u0443\u0442 \u043F\u043E \u043D\u043E\u0432\u043E\u043C\u0443 \u0444\u0438\u043B\u044C\u0442\u0440\u0443.'
-            : '\uD83D\uDCBE \u0424\u0438\u043B\u044C\u0442\u0440 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D. \u0422\u0435\u043F\u0435\u0440\u044C \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0442\u044C \u043F\u0430\u0440\u0441\u0438\u043D\u0433.',
+          '⚠️ Не смог разобрать ссылку.',
+          'Пришлите одну или несколько Encar-ссылок либо raw `q=(And...)`.',
+          '',
+          buildAwaitingCustomFilterText(session),
         ].join('\n'),
         session,
-        KEYBOARD_SECTION_FILTERS,
+        KEYBOARD_SECTION_CUSTOM,
       )
     }
   }
@@ -639,7 +878,7 @@ export async function startStandaloneTelegramFreshBot() {
 
 if (isDirectRun()) {
   startStandaloneTelegramFreshBot().catch((error) => {
-    console.error(`STANDALONE_TELEGRAM_BOT_FATAL | ${cleanText(error?.message) || error}`)
-    globalThis.process?.exit?.(1)
+    console.error(error)
+    process.exitCode = 1
   })
 }

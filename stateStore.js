@@ -3,6 +3,10 @@ import path from 'path'
 import {
   FILTER_MODE_SCOPE,
   normalizeBrandKey,
+  normalizeBrandMonth,
+  normalizeBrandSelections,
+  normalizeBrandYear,
+  normalizeCustomFilters,
   normalizeFilterMode,
   normalizeParseScope,
 } from './encarFilters.js'
@@ -36,15 +40,34 @@ function normalizeChatId(value) {
   return Number.isFinite(parsed) ? String(parsed) : ''
 }
 
+function cloneSession(session) {
+  return {
+    ...session,
+    brandSelections: Array.isArray(session?.brandSelections)
+      ? session.brandSelections.map((selection) => ({ ...selection }))
+      : [],
+    customFilters: Array.isArray(session?.customFilters)
+      ? session.customFilters.map((filter) => ({ ...filter }))
+      : [],
+  }
+}
+
 function buildDefaultSession(chatId) {
   return {
     chatId: normalizeChatId(chatId),
     parseScope: normalizeParseScope('all'),
     filterMode: FILTER_MODE_SCOPE,
+    currentSection: 'main',
     brandKey: '',
+    brandSelections: [],
     customFilterUrl: '',
     customFilterQuery: '',
+    customFilters: [],
     awaitingCustomFilter: false,
+    pendingBrandKey: '',
+    pendingBrandYear: 0,
+    awaitingBrandYear: false,
+    awaitingBrandMonth: false,
     isActive: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -62,16 +85,24 @@ function normalizeState(rawState) {
       const normalizedChatId = normalizeChatId(chatId)
       if (!normalizedChatId) continue
 
+      const defaultSession = buildDefaultSession(normalizedChatId)
       state.sessions[normalizedChatId] = {
-        ...buildDefaultSession(normalizedChatId),
+        ...defaultSession,
         ...session,
         chatId: normalizedChatId,
         parseScope: normalizeParseScope(session?.parseScope),
         filterMode: normalizeFilterMode(session?.filterMode),
+        currentSection: cleanText(session?.currentSection) || 'main',
         brandKey: normalizeBrandKey(session?.brandKey),
+        brandSelections: normalizeBrandSelections(session?.brandSelections, session?.brandKey),
         customFilterUrl: cleanText(session?.customFilterUrl),
         customFilterQuery: cleanText(session?.customFilterQuery),
+        customFilters: normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery),
         awaitingCustomFilter: Boolean(session?.awaitingCustomFilter),
+        pendingBrandKey: normalizeBrandKey(session?.pendingBrandKey),
+        pendingBrandYear: normalizeBrandYear(session?.pendingBrandYear, 0),
+        awaitingBrandYear: Boolean(session?.awaitingBrandYear),
+        awaitingBrandMonth: Boolean(session?.awaitingBrandMonth),
         isActive: Boolean(session?.isActive),
         username: cleanText(session?.username),
         firstName: cleanText(session?.firstName),
@@ -163,7 +194,7 @@ export class LocalStateStore {
       this.state.sessions[normalizedChatId] = buildDefaultSession(normalizedChatId)
     }
 
-    return { ...this.state.sessions[normalizedChatId] }
+    return cloneSession(this.state.sessions[normalizedChatId])
   }
 
   upsertSession(chatId, patch = {}) {
@@ -177,12 +208,33 @@ export class LocalStateStore {
       chatId: normalizedChatId,
       parseScope: normalizeParseScope(patch.parseScope ?? current.parseScope),
       filterMode: normalizeFilterMode(patch.filterMode ?? current.filterMode),
+      currentSection: cleanText(patch.currentSection ?? current.currentSection) || 'main',
       brandKey: normalizeBrandKey(patch.brandKey ?? current.brandKey),
+      brandSelections: normalizeBrandSelections(
+        patch.brandSelections ?? current.brandSelections,
+        patch.brandKey ?? current.brandKey,
+      ),
       customFilterUrl: cleanText(patch.customFilterUrl ?? current.customFilterUrl),
       customFilterQuery: cleanText(patch.customFilterQuery ?? current.customFilterQuery),
+      customFilters: normalizeCustomFilters(
+        patch.customFilters ?? current.customFilters,
+        patch.customFilterUrl ?? current.customFilterUrl,
+        patch.customFilterQuery ?? current.customFilterQuery,
+      ),
       awaitingCustomFilter: typeof patch.awaitingCustomFilter === 'boolean'
         ? patch.awaitingCustomFilter
         : Boolean(current.awaitingCustomFilter),
+      pendingBrandKey: normalizeBrandKey(patch.pendingBrandKey ?? current.pendingBrandKey),
+      pendingBrandYear: normalizeBrandYear(
+        patch.pendingBrandYear ?? current.pendingBrandYear,
+        current.pendingBrandYear ? normalizeBrandYear(current.pendingBrandYear, 0) : 0,
+      ),
+      awaitingBrandYear: typeof patch.awaitingBrandYear === 'boolean'
+        ? patch.awaitingBrandYear
+        : Boolean(current.awaitingBrandYear),
+      awaitingBrandMonth: typeof patch.awaitingBrandMonth === 'boolean'
+        ? patch.awaitingBrandMonth
+        : Boolean(current.awaitingBrandMonth),
       isActive: typeof patch.isActive === 'boolean' ? patch.isActive : Boolean(current.isActive),
       username: cleanText(patch.username ?? current.username),
       firstName: cleanText(patch.firstName ?? current.firstName),
@@ -191,7 +243,7 @@ export class LocalStateStore {
     }
 
     this.state.sessions[normalizedChatId] = next
-    return { ...next }
+    return cloneSession(next)
   }
 
   deactivateSession(chatId) {
@@ -201,7 +253,7 @@ export class LocalStateStore {
   getActiveSessions() {
     return Object.values(this.state.sessions)
       .filter((session) => session?.isActive)
-      .map((session) => ({ ...session }))
+      .map((session) => cloneSession(session))
   }
 
   getSeenListing(encarId) {

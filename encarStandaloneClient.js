@@ -13,11 +13,10 @@ import {
 import {
   FILTER_MODE_BRAND,
   FILTER_MODE_CUSTOM,
-  getSessionFilterKey,
+  getSessionFilterEntries,
   matchesBrandPreset,
   normalizeFilterMode,
   normalizeParseScope,
-  resolveSessionListQuery,
 } from './encarFilters.js'
 
 const LIST_PAGE_SIZE = 20
@@ -812,16 +811,16 @@ function matchesParseScope(listing, parseScope) {
   return true
 }
 
-function matchesSessionFilter(listing, session = {}) {
-  const filterMode = normalizeFilterMode(session?.filterMode)
+function matchesSessionFilter(listing, filterEntry = {}) {
+  const filterMode = normalizeFilterMode(filterEntry?.filterMode)
   if (filterMode === FILTER_MODE_BRAND) {
-    return matchesBrandPreset(listing, session?.brandKey)
+    return matchesBrandPreset(listing, filterEntry?.brandKey)
   }
   if (filterMode === FILTER_MODE_CUSTOM) {
     return true
   }
 
-  const normalizedScope = normalizeParseScope(session?.parseScope)
+  const normalizedScope = normalizeParseScope(filterEntry?.parseScope)
   return matchesParseScope(listing, normalizedScope)
 }
 
@@ -829,23 +828,30 @@ function buildFilterGroups(sessions = []) {
   const groups = new Map()
 
   for (const session of sessions) {
-    const filterKey = getSessionFilterKey(session)
-    const query = resolveSessionListQuery(session)
-    if (!filterKey || !query) continue
+    const filterEntries = getSessionFilterEntries(session)
+    for (const filterEntry of filterEntries) {
+      const filterKey = cleanText(filterEntry?.filterKey)
+      const query = cleanText(filterEntry?.query)
+      if (!filterKey || !query) continue
 
-    const existing = groups.get(filterKey) || {
-      filterKey,
-      query,
-      sessions: [],
-      chatIds: [],
+      const existing = groups.get(filterKey) || {
+        filterKey,
+        query,
+        filterMode: normalizeFilterMode(filterEntry?.filterMode),
+        parseScope: normalizeParseScope(filterEntry?.parseScope),
+        brandKey: cleanText(filterEntry?.brandKey),
+        label: cleanText(filterEntry?.label),
+        sessions: [],
+        chatIds: [],
+      }
+
+      existing.sessions.push(session)
+      if (session?.chatId && !existing.chatIds.includes(session.chatId)) {
+        existing.chatIds.push(session.chatId)
+      }
+
+      groups.set(filterKey, existing)
     }
-
-    existing.sessions.push(session)
-    if (session?.chatId && !existing.chatIds.includes(session.chatId)) {
-      existing.chatIds.push(session.chatId)
-    }
-
-    groups.set(filterKey, existing)
   }
 
   return [...groups.values()]
@@ -917,7 +923,7 @@ export function createStandaloneEncarClient(env = {}) {
     const response = await apiClient.get('/search/car/list/premium', {
       params: {
         count: true,
-        q: resolveSessionListQuery(filterGroup?.sessions?.[0] || {}),
+        q: cleanText(filterGroup?.query),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
       },
       headers: {
@@ -938,7 +944,7 @@ export function createStandaloneEncarClient(env = {}) {
         offset,
         limit: LIST_PAGE_SIZE,
         count: true,
-        q: resolveSessionListQuery(filterGroup?.sessions?.[0] || {}),
+        q: cleanText(filterGroup?.query),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
         sort: 'ModifiedDate',
       },
@@ -1175,7 +1181,8 @@ export function createStandaloneEncarClient(env = {}) {
         for (const raw of pageCars) {
           const currentGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === liveGroup.filterKey)
           if (!currentGroup?.chatIds?.length) break
-          const isCustomGroup = normalizeFilterMode(currentGroup.sessions[0]?.filterMode) === FILTER_MODE_CUSTOM
+          const isCustomGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_CUSTOM
+          const isBrandGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_BRAND
 
           const encarId = cleanText(raw?.Id)
           if (!encarId) continue
@@ -1184,7 +1191,7 @@ export function createStandaloneEncarClient(env = {}) {
           if (stateStore.getSeenListing(listingStateKey)) continue
 
           const rawYear = parseListYear(raw?.Year)
-          if (!isCustomGroup && (!Number.isFinite(rawYear) || rawYear < MIN_YEAR)) {
+          if (!isCustomGroup && !isBrandGroup && (!Number.isFinite(rawYear) || rawYear < MIN_YEAR)) {
             stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
             continue
           }
@@ -1195,7 +1202,7 @@ export function createStandaloneEncarClient(env = {}) {
             model: normalizeText(raw?.Model || raw?.Badge),
           }
 
-          if (!matchesSessionFilter(rawListing, currentGroup.sessions[0])) continue
+          if (!matchesSessionFilter(rawListing, currentGroup)) continue
 
           let detail = null
           try {
@@ -1220,12 +1227,22 @@ export function createStandaloneEncarClient(env = {}) {
           if (!qualifiesFresh) continue
 
           const latestGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === currentGroup.filterKey)
-          const matchingChatIds = latestGroup?.chatIds || []
+          const matchingChatIds = (latestGroup?.chatIds || []).filter((chatId) => !stateStore.getSeenListing(`chat:${chatId}::${encarId}`))
           if (!matchingChatIds.length) continue
 
           pageFreshHits += 1
           newFreshCount += 1
           await onFreshListing(detail, matchingChatIds)
+          for (const chatId of matchingChatIds) {
+            stateStore.rememberListing(`chat:${chatId}::${encarId}`, {
+              priceKrw: detail.priceKrw,
+              viewCount: detail.manage.viewCount,
+              callCount: detail.manage.callCount,
+              subscribeCount: detail.manage.subscribeCount,
+              qualifiesFresh: true,
+              notifiedAt: new Date().toISOString(),
+            })
+          }
           stateStore.rememberListing(listingStateKey, {
             priceKrw: detail.priceKrw,
             viewCount: detail.manage.viewCount,

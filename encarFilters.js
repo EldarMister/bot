@@ -8,6 +8,23 @@ export const FILTER_MODE_SCOPE = 'scope'
 export const FILTER_MODE_BRAND = 'brand'
 export const FILTER_MODE_CUSTOM = 'custom'
 
+export const BRAND_FILTER_MIN_YEAR = 2000
+export const BRAND_FILTER_MAX_YEAR = 2026
+
+export const YEAR_OPTIONS = Object.freeze(
+  Array.from(
+    { length: BRAND_FILTER_MAX_YEAR - BRAND_FILTER_MIN_YEAR + 1 },
+    (_, index) => BRAND_FILTER_MAX_YEAR - index,
+  ),
+)
+
+export const MONTH_OPTIONS = Object.freeze(
+  Array.from({ length: 12 }, (_, index) => index + 1),
+)
+
+const DEFAULT_BRAND_YEAR = 2019
+const DEFAULT_BRAND_MONTH = 1
+
 const JAPANESE_MANUFACTURER_TOKENS = [
   '도요타',
   '렉서스',
@@ -16,7 +33,7 @@ const JAPANESE_MANUFACTURER_TOKENS = [
   '인피니티',
   '마쯔다',
   '스바루',
-  '미쯔비시',
+  '미쓰비시',
   '스즈키',
   '이스즈',
   '다이하쯔',
@@ -47,14 +64,14 @@ export const BRAND_PRESETS = Object.freeze([
   { key: 'honda', label: 'Honda', button: '🇯🇵 Honda', manufacturerTokens: ['혼다'], scope: PARSE_SCOPE_IMPORTED, signals: ['honda', '혼다'] },
   { key: 'nissan', label: 'Nissan', button: '🇯🇵 Nissan', manufacturerTokens: ['닛산'], scope: PARSE_SCOPE_IMPORTED, signals: ['nissan', '닛산'] },
   { key: 'bmw', label: 'BMW', button: '🇩🇪 BMW', manufacturerTokens: ['BMW'], scope: PARSE_SCOPE_IMPORTED, signals: ['bmw'] },
-  { key: 'mercedes-benz', label: 'Mercedes-Benz', button: '🇩🇪 Mercedes-Benz', manufacturerTokens: ['벤츠'], scope: PARSE_SCOPE_IMPORTED, signals: ['mercedes', 'mercedesbenz', 'benz', '벤츠'] },
+  { key: 'mercedes-benz', label: 'Mercedes-Benz', button: '🇩🇪 Mercedes', manufacturerTokens: ['벤츠'], scope: PARSE_SCOPE_IMPORTED, signals: ['mercedes', 'mercedesbenz', 'benz', '벤츠'] },
   { key: 'audi', label: 'Audi', button: '🇩🇪 Audi', manufacturerTokens: ['아우디'], scope: PARSE_SCOPE_IMPORTED, signals: ['audi', '아우디'] },
-  { key: 'volkswagen', label: 'Volkswagen', button: '🇩🇪 Volkswagen', manufacturerTokens: ['폭스바겐'], scope: PARSE_SCOPE_IMPORTED, signals: ['volkswagen', 'vw', '폭스바겐'] },
+  { key: 'volkswagen', label: 'Volkswagen', button: '🇩🇪 VW', manufacturerTokens: ['폭스바겐'], scope: PARSE_SCOPE_IMPORTED, signals: ['volkswagen', 'vw', '폭스바겐'] },
   { key: 'porsche', label: 'Porsche', button: '🇩🇪 Porsche', manufacturerTokens: ['포르쉐'], scope: PARSE_SCOPE_IMPORTED, signals: ['porsche', '포르쉐'] },
   { key: 'mini', label: 'MINI', button: '🇩🇪 MINI', manufacturerTokens: ['미니'], scope: PARSE_SCOPE_IMPORTED, signals: ['mini', '미니'] },
   { key: 'tesla', label: 'Tesla', button: '⚡ Tesla', manufacturerTokens: ['테슬라'], scope: PARSE_SCOPE_IMPORTED, signals: ['tesla', '테슬라'] },
   { key: 'volvo', label: 'Volvo', button: '🇸🇪 Volvo', manufacturerTokens: ['볼보'], scope: PARSE_SCOPE_IMPORTED, signals: ['volvo', '볼보'] },
-  { key: 'land-rover', label: 'Land Rover', button: '🇬🇧 Land Rover', manufacturerTokens: ['랜드로버'], scope: PARSE_SCOPE_IMPORTED, signals: ['landrover', 'land rover', '랜드로버'] },
+  { key: 'land-rover', label: 'Land Rover', button: '🇬🇧 Rover', manufacturerTokens: ['랜드로버'], scope: PARSE_SCOPE_IMPORTED, signals: ['landrover', 'land rover', '랜드로버'] },
   { key: 'jeep', label: 'Jeep', button: '🇺🇸 Jeep', manufacturerTokens: ['지프'], scope: PARSE_SCOPE_IMPORTED, signals: ['jeep', '지프'] },
 ])
 
@@ -64,12 +81,20 @@ function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
+function cleanMultilineText(value) {
+  return String(value || '').trim()
+}
+
 function escapeQueryToken(value) {
   return cleanText(value).replace(/\./g, '')
 }
 
 function normalizeSignal(value) {
   return cleanText(value).toLowerCase().replace(/[^a-z0-9\uac00-\ud7a3]+/g, '')
+}
+
+function normalizeStoredUrl(value) {
+  return String(value || '').trim()
 }
 
 function buildManufacturerOrQuery(tokens = []) {
@@ -83,34 +108,39 @@ function buildManufacturerOrQuery(tokens = []) {
   return `(Or.${nodes.join('_.')})`
 }
 
-function wrapYearScopedQuery(scopePrefix, manufacturerTokens = []) {
+function buildRangeMarker(year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
+  return `${normalizeBrandYear(year, DEFAULT_BRAND_YEAR)}${String(normalizeBrandMonth(month, DEFAULT_BRAND_MONTH)).padStart(2, '0')}`
+}
+
+function wrapYearScopedQuery(scopePrefix, manufacturerTokens = [], year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
   const manufacturerOr = buildManufacturerOrQuery(manufacturerTokens)
-  if (!manufacturerOr) return `${scopePrefix}.Year.range(201900..).)`
-  return `${scopePrefix}.Year.range(201900..)._.${manufacturerOr})`
+  const rangeStart = buildRangeMarker(year, month)
+  if (!manufacturerOr) return `${scopePrefix}.Year.range(${rangeStart}..).)`
+  return `${scopePrefix}.Year.range(${rangeStart}..)._.${manufacturerOr})`
 }
 
 function buildScopeListQuery(parseScope = PARSE_SCOPE_ALL) {
   const normalizedScope = normalizeParseScope(parseScope)
   if (normalizedScope === PARSE_SCOPE_DOMESTIC) return '(And.Hidden.N._.CarType.Y._.Year.range(201900..).)'
   if (normalizedScope === PARSE_SCOPE_IMPORTED) return '(And.Hidden.N._.CarType.N._.Year.range(201900..).)'
-  if (normalizedScope === PARSE_SCOPE_JAPANESE) return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', JAPANESE_MANUFACTURER_TOKENS)
-  if (normalizedScope === PARSE_SCOPE_GERMAN) return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', GERMAN_MANUFACTURER_TOKENS)
+  if (normalizedScope === PARSE_SCOPE_JAPANESE) return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', JAPANESE_MANUFACTURER_TOKENS, 2019, 1)
+  if (normalizedScope === PARSE_SCOPE_GERMAN) return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', GERMAN_MANUFACTURER_TOKENS, 2019, 1)
   return '(And.Hidden.N._.Year.range(201900..).)'
 }
 
-function buildBrandListQuery(brandKey = '') {
+function buildBrandListQuery(brandKey = '', year = DEFAULT_BRAND_YEAR, month = DEFAULT_BRAND_MONTH) {
   const preset = getBrandPreset(brandKey)
   if (!preset) return buildScopeListQuery(PARSE_SCOPE_ALL)
 
   if (preset.scope === PARSE_SCOPE_DOMESTIC) {
-    return wrapYearScopedQuery('(And.Hidden.N._.CarType.Y._', preset.manufacturerTokens)
+    return wrapYearScopedQuery('(And.Hidden.N._.CarType.Y._', preset.manufacturerTokens, year, month)
   }
 
   if (preset.scope === PARSE_SCOPE_IMPORTED) {
-    return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', preset.manufacturerTokens)
+    return wrapYearScopedQuery('(And.Hidden.N._.CarType.N._', preset.manufacturerTokens, year, month)
   }
 
-  return wrapYearScopedQuery('(And.Hidden.N._', preset.manufacturerTokens)
+  return wrapYearScopedQuery('(And.Hidden.N._', preset.manufacturerTokens, year, month)
 }
 
 function hashText(value) {
@@ -121,6 +151,27 @@ function hashText(value) {
     hash |= 0
   }
   return Math.abs(hash).toString(36)
+}
+
+function decodeQueryValue(value) {
+  let result = cleanText(value)
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const decoded = decodeURIComponent(result)
+      if (!decoded || decoded === result) break
+      result = cleanText(decoded)
+    } catch {
+      break
+    }
+  }
+  return result
+}
+
+function normalizeQueryText(value) {
+  const query = decodeQueryValue(value)
+  if (!query) return ''
+  if (query.startsWith('q=')) return normalizeQueryText(query.slice(2))
+  return query
 }
 
 function extractCustomQueryFromUrl(rawUrl) {
@@ -137,18 +188,55 @@ function extractCustomQueryFromUrl(rawUrl) {
     return null
   }
 
-  let query = cleanText(url.searchParams.get('q'))
-  if (!query && url.hash.includes('?')) {
-    const hashQuery = url.hash.slice(url.hash.indexOf('?') + 1)
-    const params = new URLSearchParams(hashQuery)
-    query = cleanText(params.get('q'))
+  const queryCandidates = [
+    url.searchParams.get('q'),
+    url.searchParams.get('query'),
+    url.searchParams.get('search'),
+  ]
+
+  if (url.hash) {
+    const hash = url.hash.slice(1)
+    queryCandidates.push(hash)
+    if (hash.includes('?')) {
+      const hashParams = new URLSearchParams(hash.slice(hash.indexOf('?') + 1))
+      queryCandidates.push(hashParams.get('q'))
+      queryCandidates.push(hashParams.get('query'))
+    }
+    if (hash.includes('q=')) {
+      const matched = hash.match(/(?:^|[?&#])q=([^&#]+)/i)
+      if (matched?.[1]) queryCandidates.push(matched[1])
+    }
   }
 
-  if (!query) return null
-  return {
-    url: url.toString(),
-    query,
+  for (const candidateQuery of queryCandidates) {
+    const normalizedQuery = normalizeQueryText(candidateQuery)
+    if (normalizedQuery.startsWith('(') && normalizedQuery.endsWith(')')) {
+      return {
+        id: `custom_${hashText(normalizedQuery)}`,
+        url: url.toString(),
+        query: normalizedQuery,
+      }
+    }
   }
+
+  return null
+}
+
+function extractRawQueryCandidates(value) {
+  const raw = cleanMultilineText(value)
+  if (!raw) return []
+
+  const candidates = []
+  if (raw.startsWith('(') && raw.endsWith(')')) {
+    candidates.push(normalizeQueryText(raw))
+  }
+
+  const queryMatch = raw.match(/(?:^|[?&#\s])q=([^&#\s]+)/i)
+  if (queryMatch?.[1]) {
+    candidates.push(normalizeQueryText(queryMatch[1]))
+  }
+
+  return candidates.filter((item) => item.startsWith('(') && item.endsWith(')'))
 }
 
 export function normalizeParseScope(value) {
@@ -171,6 +259,20 @@ export function normalizeBrandKey(value) {
   return BRAND_PRESET_MAP.has(normalized) ? normalized : ''
 }
 
+export function normalizeBrandYear(value, fallback = DEFAULT_BRAND_YEAR) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(parsed)) return fallback
+  if (parsed < BRAND_FILTER_MIN_YEAR || parsed > BRAND_FILTER_MAX_YEAR) return fallback
+  return parsed
+}
+
+export function normalizeBrandMonth(value, fallback = DEFAULT_BRAND_MONTH) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(parsed)) return fallback
+  if (parsed < 1 || parsed > 12) return fallback
+  return parsed
+}
+
 export function getBrandPreset(brandKey = '') {
   return BRAND_PRESET_MAP.get(normalizeBrandKey(brandKey)) || null
 }
@@ -183,42 +285,140 @@ export function getScopeLabel(parseScope) {
   return 'Все машины'
 }
 
+export function getBrandSelectionKey(selection = {}) {
+  const brandKey = normalizeBrandKey(selection?.brandKey)
+  const year = normalizeBrandYear(selection?.year)
+  const month = normalizeBrandMonth(selection?.month)
+  return brandKey ? `${brandKey}:${year}:${month}` : ''
+}
+
+export function normalizeBrandSelections(value, legacyBrandKey = '') {
+  const rawSelections = Array.isArray(value) ? value : []
+  const selections = []
+  const seenKeys = new Set()
+
+  for (const selection of rawSelections) {
+    const brandKey = normalizeBrandKey(selection?.brandKey)
+    if (!brandKey) continue
+
+    const normalized = {
+      brandKey,
+      year: normalizeBrandYear(selection?.year),
+      month: normalizeBrandMonth(selection?.month),
+    }
+
+    const uniqueKey = getBrandSelectionKey(normalized)
+    if (!uniqueKey || seenKeys.has(uniqueKey)) continue
+    seenKeys.add(uniqueKey)
+    selections.push(normalized)
+  }
+
+  const legacyKey = normalizeBrandKey(legacyBrandKey)
+  if (!selections.length && legacyKey) {
+    selections.push({
+      brandKey: legacyKey,
+      year: DEFAULT_BRAND_YEAR,
+      month: DEFAULT_BRAND_MONTH,
+    })
+  }
+
+  return selections
+}
+
+export function normalizeCustomFilters(value, legacyCustomFilterUrl = '', legacyCustomFilterQuery = '') {
+  const rawFilters = Array.isArray(value) ? value : []
+  const filters = []
+  const seenQueries = new Set()
+
+  for (const filter of rawFilters) {
+    const query = normalizeQueryText(filter?.query)
+    if (!query || !query.startsWith('(') || !query.endsWith(')')) continue
+    if (seenQueries.has(query)) continue
+    seenQueries.add(query)
+
+    filters.push({
+      id: cleanText(filter?.id) || `custom_${hashText(query)}`,
+      url: normalizeStoredUrl(filter?.url),
+      query,
+    })
+  }
+
+  const legacyQuery = normalizeQueryText(legacyCustomFilterQuery)
+  if (!filters.length && legacyQuery.startsWith('(') && legacyQuery.endsWith(')')) {
+    filters.push({
+      id: `custom_${hashText(legacyQuery)}`,
+      url: normalizeStoredUrl(legacyCustomFilterUrl),
+      query: legacyQuery,
+    })
+  }
+
+  return filters
+}
+
+export function getBrandSelectionLabel(selection = {}) {
+  const preset = getBrandPreset(selection?.brandKey)
+  const year = normalizeBrandYear(selection?.year)
+  const month = normalizeBrandMonth(selection?.month)
+  return `${preset?.label || selection?.brandKey || 'Марка'} с ${month.toString().padStart(2, '0')}.${year}`
+}
+
+export function getCustomFilterLabel(filter = {}, index = 0) {
+  const prefix = index > 0 ? `${index}. ` : ''
+  if (cleanText(filter?.url)) return `${prefix}${cleanText(filter.url)}`
+  return `${prefix}${cleanText(filter?.query).slice(0, 80)}`
+}
+
 export function getFilterSummary(session = {}) {
   const filterMode = normalizeFilterMode(session?.filterMode)
+  const brandSelections = normalizeBrandSelections(session?.brandSelections, session?.brandKey)
+  const customFilters = normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
+
   if (filterMode === FILTER_MODE_BRAND) {
-    const preset = getBrandPreset(session?.brandKey)
-    return preset ? `Марка: ${preset.label}` : 'Марка не выбрана'
+    return brandSelections.length ? `Марки: ${brandSelections.length}` : 'Все машины'
   }
+
   if (filterMode === FILTER_MODE_CUSTOM) {
-    return 'Свой фильтр Encar'
+    return customFilters.length ? `Свои ссылки: ${customFilters.length}` : 'Все машины'
   }
-  return getScopeLabel(normalizeParseScope(session?.parseScope))
+
+  return 'Все машины'
 }
 
-export function getSessionFilterKey(session = {}) {
+export function getSessionFilterEntries(session = {}) {
   const filterMode = normalizeFilterMode(session?.filterMode)
-  if (filterMode === FILTER_MODE_BRAND) {
-    const brandKey = normalizeBrandKey(session?.brandKey)
-    return brandKey ? `brand:${brandKey}` : `scope:${normalizeParseScope(session?.parseScope)}`
+  const brandSelections = normalizeBrandSelections(session?.brandSelections, session?.brandKey)
+  const customFilters = normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
+
+  if (filterMode === FILTER_MODE_BRAND && brandSelections.length) {
+    return brandSelections.map((selection) => ({
+      filterMode: FILTER_MODE_BRAND,
+      filterKey: `brand:${getBrandSelectionKey(selection)}`,
+      query: buildBrandListQuery(selection.brandKey, selection.year, selection.month),
+      brandKey: selection.brandKey,
+      year: selection.year,
+      month: selection.month,
+      label: getBrandSelectionLabel(selection),
+    }))
   }
 
-  if (filterMode === FILTER_MODE_CUSTOM) {
-    const query = cleanText(session?.customFilterQuery)
-    return query ? `custom:${hashText(query)}` : `scope:${normalizeParseScope(session?.parseScope)}`
+  if (filterMode === FILTER_MODE_CUSTOM && customFilters.length) {
+    return customFilters.map((filter) => ({
+      filterMode: FILTER_MODE_CUSTOM,
+      filterKey: `custom:${hashText(filter.query)}`,
+      query: filter.query,
+      customFilterId: filter.id,
+      url: filter.url,
+      label: filter.url || filter.query,
+    }))
   }
 
-  return `scope:${normalizeParseScope(session?.parseScope)}`
-}
-
-export function resolveSessionListQuery(session = {}) {
-  const filterMode = normalizeFilterMode(session?.filterMode)
-  if (filterMode === FILTER_MODE_BRAND) {
-    return buildBrandListQuery(session?.brandKey)
-  }
-  if (filterMode === FILTER_MODE_CUSTOM) {
-    return cleanText(session?.customFilterQuery) || buildScopeListQuery(session?.parseScope)
-  }
-  return buildScopeListQuery(session?.parseScope)
+  return [{
+    filterMode: FILTER_MODE_SCOPE,
+    filterKey: `scope:${PARSE_SCOPE_ALL}`,
+    query: buildScopeListQuery(PARSE_SCOPE_ALL),
+    parseScope: PARSE_SCOPE_ALL,
+    label: 'Все машины',
+  }]
 }
 
 export function matchesBrandPreset(listing = {}, brandKey = '') {
@@ -232,14 +432,40 @@ export function matchesBrandPreset(listing = {}, brandKey = '') {
   ].map((value) => normalizeSignal(value))
     .filter(Boolean)
 
-  return haystack.some((value) => preset.signals.some((signal) => value.includes(normalizeSignal(signal)) || normalizeSignal(signal).includes(value)))
+  return haystack.some((value) => preset.signals.some((signal) => {
+    const normalizedSignal = normalizeSignal(signal)
+    return value.includes(normalizedSignal) || normalizedSignal.includes(value)
+  }))
+}
+
+export function parseCustomFilterInputs(value) {
+  const raw = cleanMultilineText(value)
+  if (!raw) return []
+
+  const entries = []
+  const seenQueries = new Set()
+  const urlCandidates = raw.match(/(?:https?:\/\/|www\.)\S+/gi) || []
+
+  for (const urlCandidate of urlCandidates) {
+    const parsed = extractCustomQueryFromUrl(urlCandidate)
+    if (!parsed?.query || seenQueries.has(parsed.query)) continue
+    seenQueries.add(parsed.query)
+    entries.push(parsed)
+  }
+
+  for (const rawCandidate of extractRawQueryCandidates(raw)) {
+    if (seenQueries.has(rawCandidate)) continue
+    seenQueries.add(rawCandidate)
+    entries.push({
+      id: `custom_${hashText(rawCandidate)}`,
+      url: '',
+      query: rawCandidate,
+    })
+  }
+
+  return entries
 }
 
 export function parseCustomFilterInput(value) {
-  const raw = cleanText(value)
-  if (!raw) return null
-  if (raw.startsWith('(') && raw.endsWith(')') && raw.includes('Year.range')) {
-    return { url: '', query: raw }
-  }
-  return extractCustomQueryFromUrl(raw)
+  return parseCustomFilterInputs(value)[0] || null
 }
