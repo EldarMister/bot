@@ -82,6 +82,15 @@ function getSessionCustomFilters(session = {}) {
   return normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
 }
 
+function getPendingBrandMonthSelections(session = {}) {
+  const brandKey = normalizeBrandKey(session?.pendingBrandKey)
+  const year = Number.parseInt(String(session?.pendingBrandYear || ''), 10)
+  if (!brandKey || !Number.isFinite(year) || year <= 0) return []
+
+  return getSessionBrandSelections(session)
+    .filter((selection) => normalizeBrandKey(selection?.brandKey) === brandKey && Number(selection?.year) === year)
+}
+
 function formatCurrentFilterLabel(session) {
   return getFilterSummary(session)
 }
@@ -152,6 +161,14 @@ function parseMonthButton(text) {
   return MONTH_OPTIONS.includes(parsed) ? parsed : 0
 }
 
+function getMonthButtonLabel(month, session = {}) {
+  const normalizedMonth = Number.parseInt(String(month || ''), 10)
+  const baseLabel = String(normalizedMonth).padStart(2, '0')
+  const isSelected = getPendingBrandMonthSelections(session)
+    .some((selection) => Number(selection?.month) === normalizedMonth)
+  return isSelected ? `вњ… ${baseLabel}` : baseLabel
+}
+
 function formatInteger(value) {
   const number = Number(value)
   if (!Number.isFinite(number) || number <= 0) return ''
@@ -213,7 +230,7 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   }
 
   if (section === KEYBOARD_SECTION_BRAND_MONTHS) {
-    const rows = buildButtonRows(MONTH_OPTIONS.map((month) => String(month).padStart(2, '0')), 3)
+    const rows = buildButtonRows(MONTH_OPTIONS.map((month) => getMonthButtonLabel(month, session)), 3)
     rows.push([{ text: BUTTON_BACK }])
 
     return {
@@ -334,6 +351,20 @@ function buildBrandMonthsText(session) {
   return [
     `🗓️ Выберите месяц для ${preset?.label || 'марки'}.`,
     `Год: ${session?.pendingBrandYear || '-'}.`,
+  ].join('\n')
+}
+
+function buildPendingBrandMonthsText(session) {
+  const preset = getBrandPreset(session?.pendingBrandKey)
+  const selectedMonths = getPendingBrandMonthSelections(session)
+    .filter((selection) => Number(selection?.month) > 0)
+    .map((selection) => String(selection.month).padStart(2, '0'))
+
+  return [
+    `рџ—“пёЏ Р’С‹Р±РµСЂРёС‚Рµ РјРµСЃСЏС† РґР»СЏ ${preset?.label || 'РјР°СЂРєРё'}.`,
+    `Р“РѕРґ: ${session?.pendingBrandYear || '-'}.`,
+    'РњРѕР¶РЅРѕ РІС‹Р±СЂР°С‚СЊ РЅРµСЃРєРѕР»СЊРєРѕ РјРµСЃСЏС†РµРІ.',
+    ...(selectedMonths.length ? ['', `РЈР¶Рµ РІС‹Р±СЂР°РЅРѕ: ${selectedMonths.join(', ')}.`] : []),
   ].join('\n')
 }
 
@@ -641,7 +672,10 @@ export async function startStandaloneTelegramFreshBot() {
 
     if (text === BUTTON_BACK) {
       if (currentSession?.awaitingBrandMonth || currentSession?.currentSection === KEYBOARD_SECTION_BRAND_MONTHS) {
-        if (currentSession?.pendingBrandKey && currentSession?.pendingBrandYear) {
+        const hasSelectedMonths = getPendingBrandMonthSelections(currentSession)
+          .some((selection) => Number(selection?.month) > 0)
+
+        if (currentSession?.pendingBrandKey && currentSession?.pendingBrandYear && !hasSelectedMonths) {
           const fallbackSelection = {
             brandKey: currentSession.pendingBrandKey,
             year: currentSession.pendingBrandYear,
@@ -682,6 +716,7 @@ export async function startStandaloneTelegramFreshBot() {
           currentSection: KEYBOARD_SECTION_BRAND_YEARS,
           awaitingBrandMonth: false,
           awaitingBrandYear: true,
+          pendingBrandYear: 0,
         })
         await stateStore.flush()
         await respondWithControl(message, buildBrandYearsText(session), session, KEYBOARD_SECTION_BRAND_YEARS)
@@ -867,30 +902,28 @@ export async function startStandaloneTelegramFreshBot() {
         awaitingBrandMonth: true,
       })
       await stateStore.flush()
-      await respondWithControl(message, buildBrandMonthsText(session), session, KEYBOARD_SECTION_BRAND_MONTHS)
+      await respondWithControl(message, buildPendingBrandMonthsText(session), session, KEYBOARD_SECTION_BRAND_MONTHS)
       return
     }
 
     if (selectedMonth && currentSession?.pendingBrandKey && currentSession?.pendingBrandYear) {
+      const currentSelections = getSessionBrandSelections(currentSession)
       const nextSelections = normalizeBrandSelections([
-        ...getSessionBrandSelections(currentSession),
+        ...currentSelections,
         {
           brandKey: currentSession.pendingBrandKey,
           year: currentSession.pendingBrandYear,
           month: selectedMonth,
         },
       ])
-
       const session = stateStore.upsertSession(chatId, {
         ...commonUserFields,
         filterMode: FILTER_MODE_BRAND,
         brandSelections: nextSelections,
         brandKey: currentSession.pendingBrandKey,
-        currentSection: KEYBOARD_SECTION_BRANDS,
+        currentSection: KEYBOARD_SECTION_BRAND_MONTHS,
         awaitingBrandYear: false,
-        awaitingBrandMonth: false,
-        pendingBrandKey: '',
-        pendingBrandYear: 0,
+        awaitingBrandMonth: true,
       })
       await stateStore.flush()
       wakeParserLoop()
@@ -899,10 +932,10 @@ export async function startStandaloneTelegramFreshBot() {
         [
           `✅ Добавлен фильтр: ${getBrandSelectionLabel(nextSelections.at(-1))}.`,
           '',
-          buildBrandsText(session),
+          buildPendingBrandMonthsText(session),
         ].join('\n'),
         session,
-        KEYBOARD_SECTION_BRANDS,
+        KEYBOARD_SECTION_BRAND_MONTHS,
       )
       return
     }
