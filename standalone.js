@@ -467,15 +467,25 @@ export async function startStandaloneTelegramFreshBot() {
     }
   }
 
-  async function sendControlMessage(chatId, text, session, section = KEYBOARD_SECTION_MAIN) {
+  async function sendControlMessage(chatId, text, session, section = KEYBOARD_SECTION_MAIN, { deleteMessageIds = [] } = {}) {
     const keyboard = buildControlKeyboard(session, section)
     const existingMessageId = normalizeMessageId(session?.lastControlMessageId)
+    const messageIdsToDelete = Array.from(
+      new Set(
+        [existingMessageId, ...deleteMessageIds]
+          .map((value) => normalizeMessageId(value))
+          .filter(Boolean),
+      ),
+    )
+
+    if (messageIdsToDelete.length) {
+      await Promise.allSettled(
+        messageIdsToDelete.map((messageId) => deleteTelegramMessage(chatId, messageId)),
+      )
+    }
+
     const controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
     const nextMessageId = normalizeMessageId(controlMessage?.message_id)
-
-    if (existingMessageId && existingMessageId !== nextMessageId) {
-      await deleteTelegramMessage(chatId, existingMessageId)
-    }
 
     const nextSession = stateStore.upsertSession(chatId, {
       lastControlMessageId: nextMessageId,
@@ -492,11 +502,9 @@ export async function startStandaloneTelegramFreshBot() {
   async function respondWithControl(message, text, session, section = KEYBOARD_SECTION_MAIN) {
     const chatId = normalizeChatId(message?.chat?.id)
     const sourceMessageId = normalizeMessageId(message?.message_id)
-    const nextSession = await sendControlMessage(chatId, text, session, section)
-    if (sourceMessageId) {
-      await deleteTelegramMessage(chatId, sourceMessageId)
-    }
-    return nextSession
+    return sendControlMessage(chatId, text, session, section, {
+      deleteMessageIds: sourceMessageId ? [sourceMessageId] : [],
+    })
   }
 
   async function handleIncomingControl(message) {

@@ -184,6 +184,43 @@ function normalizeQueryText(value) {
   return query
 }
 
+function extractStructuredQueryCandidate(value) {
+  const normalizedValue = normalizeQueryText(value)
+  if (!normalizedValue) return ''
+
+  if (normalizedValue.startsWith('(') && normalizedValue.endsWith(')')) {
+    return normalizedValue
+  }
+
+  if (!(normalizedValue.startsWith('{') && normalizedValue.endsWith('}'))) {
+    return ''
+  }
+
+  try {
+    const parsed = JSON.parse(normalizedValue)
+    const nestedCandidates = [
+      parsed?.action,
+      parsed?.q,
+      parsed?.query,
+      parsed?.search,
+      parsed?.payload?.action,
+      parsed?.payload?.q,
+      parsed?.payload?.query,
+    ]
+
+    for (const nestedCandidate of nestedCandidates) {
+      const nestedQuery = normalizeQueryText(nestedCandidate)
+      if (nestedQuery.startsWith('(') && nestedQuery.endsWith(')')) {
+        return nestedQuery
+      }
+    }
+  } catch {
+    return ''
+  }
+
+  return ''
+}
+
 function extractCustomQueryFromUrl(rawUrl) {
   let candidate = cleanText(rawUrl)
   if (!candidate) return null
@@ -219,7 +256,7 @@ function extractCustomQueryFromUrl(rawUrl) {
   }
 
   for (const candidateQuery of queryCandidates) {
-    const normalizedQuery = normalizeQueryText(candidateQuery)
+    const normalizedQuery = extractStructuredQueryCandidate(candidateQuery)
     if (normalizedQuery.startsWith('(') && normalizedQuery.endsWith(')')) {
       return {
         id: `custom_${hashText(normalizedQuery)}`,
@@ -237,13 +274,25 @@ function extractRawQueryCandidates(value) {
   if (!raw) return []
 
   const candidates = []
-  if (raw.startsWith('(') && raw.endsWith(')')) {
-    candidates.push(normalizeQueryText(raw))
+  const rawStructuredQuery = extractStructuredQueryCandidate(raw)
+  if (rawStructuredQuery) {
+    candidates.push(rawStructuredQuery)
   }
 
   const queryMatch = raw.match(/(?:^|[?&#\s])q=([^&#\s]+)/i)
   if (queryMatch?.[1]) {
-    candidates.push(normalizeQueryText(queryMatch[1]))
+    const normalizedQuery = extractStructuredQueryCandidate(queryMatch[1])
+    if (normalizedQuery) {
+      candidates.push(normalizedQuery)
+    }
+  }
+
+  const searchMatch = raw.match(/(?:^|[?&#\s])search=([^&#\s]+)/i)
+  if (searchMatch?.[1]) {
+    const normalizedQuery = extractStructuredQueryCandidate(searchMatch[1])
+    if (normalizedQuery) {
+      candidates.push(normalizedQuery)
+    }
   }
 
   return candidates.filter((item) => item.startsWith('(') && item.endsWith(')'))
