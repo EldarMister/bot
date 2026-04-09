@@ -58,6 +58,7 @@ function buildDefaultSession(chatId) {
     parseScope: normalizeParseScope('all'),
     filterMode: FILTER_MODE_SCOPE,
     currentSection: 'main',
+    lastControlMessageId: 0,
     brandKey: '',
     brandSelections: [],
     customFilterUrl: '',
@@ -93,6 +94,7 @@ function normalizeState(rawState) {
         parseScope: normalizeParseScope(session?.parseScope),
         filterMode: normalizeFilterMode(session?.filterMode),
         currentSection: cleanText(session?.currentSection) || 'main',
+        lastControlMessageId: Math.max(0, Number(session?.lastControlMessageId) || 0),
         brandKey: normalizeBrandKey(session?.brandKey),
         brandSelections: normalizeBrandSelections(session?.brandSelections, session?.brandKey),
         customFilterUrl: cleanText(session?.customFilterUrl),
@@ -209,6 +211,7 @@ export class LocalStateStore {
       parseScope: normalizeParseScope(patch.parseScope ?? current.parseScope),
       filterMode: normalizeFilterMode(patch.filterMode ?? current.filterMode),
       currentSection: cleanText(patch.currentSection ?? current.currentSection) || 'main',
+      lastControlMessageId: Math.max(0, Number(patch.lastControlMessageId ?? current.lastControlMessageId) || 0),
       brandKey: normalizeBrandKey(patch.brandKey ?? current.brandKey),
       brandSelections: normalizeBrandSelections(
         patch.brandSelections ?? current.brandSelections,

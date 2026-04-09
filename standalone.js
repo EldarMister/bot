@@ -69,6 +69,11 @@ function normalizeChatId(value) {
   return Number.isFinite(parsed) ? String(parsed) : ''
 }
 
+function normalizeMessageId(value) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
 function getSessionBrandSelections(session = {}) {
   return normalizeBrandSelections(session?.brandSelections, session?.brandKey)
 }
@@ -414,7 +419,7 @@ export async function startStandaloneTelegramFreshBot() {
   }
 
   async function sendTelegramMessage(chatId, text, { keyboard = null } = {}) {
-    await axios.post(
+    const response = await axios.post(
       getTelegramApiUrl(botToken, 'sendMessage'),
       {
         chat_id: chatId,
@@ -426,12 +431,51 @@ export async function startStandaloneTelegramFreshBot() {
         timeout: TELEGRAM_TIMEOUT_MS,
       },
     )
+    return response?.data?.result || null
+  }
+
+  async function editTelegramMessage(chatId, messageId, text, { keyboard = null } = {}) {
+    const response = await axios.post(
+      getTelegramApiUrl(botToken, 'editMessageText'),
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        disable_web_page_preview: true,
+        ...(keyboard ? { reply_markup: keyboard } : {}),
+      },
+      {
+        timeout: TELEGRAM_TIMEOUT_MS,
+      },
+    )
+    return response?.data?.result || null
   }
 
   async function sendControlMessage(chatId, text, session, section = KEYBOARD_SECTION_MAIN) {
-    await sendTelegramMessage(chatId, text, {
-      keyboard: buildControlKeyboard(session, section),
+    const keyboard = buildControlKeyboard(session, section)
+    const existingMessageId = normalizeMessageId(session?.lastControlMessageId)
+    let controlMessage = null
+
+    if (existingMessageId) {
+      try {
+        controlMessage = await editTelegramMessage(chatId, existingMessageId, text, { keyboard })
+      } catch (error) {
+        const description = cleanText(error?.response?.data?.description || error?.message).toLowerCase()
+        if (!description.includes('message is not modified')) {
+          controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
+        }
+      }
+    } else {
+      controlMessage = await sendTelegramMessage(chatId, text, { keyboard })
+    }
+
+    const nextMessageId = normalizeMessageId(controlMessage?.message_id || existingMessageId)
+    const nextSession = stateStore.upsertSession(chatId, {
+      lastControlMessageId: nextMessageId,
+      currentSection: section,
     })
+    await stateStore.flush()
+    return nextSession
   }
 
   async function sendListingMessage(chatId, listing) {
