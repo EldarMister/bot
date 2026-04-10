@@ -216,9 +216,16 @@ function decodeQueryValue(value) {
 }
 
 function normalizeQueryText(value) {
-  const query = decodeQueryValue(value)
+  let query = decodeQueryValue(value)
   if (!query) return ''
+
+  query = query.replace(/^[#!]+/, '')
+  query = query.replace(/^\/+/, '')
+
   if (query.startsWith('q=')) return normalizeQueryText(query.slice(2))
+  if (query.startsWith('search=')) return normalizeQueryText(query.slice(7))
+  if (query.startsWith('action=')) return normalizeQueryText(query.slice(7))
+
   return query
 }
 
@@ -277,18 +284,32 @@ function extractCustomQueryFromUrl(rawUrl) {
     url.searchParams.get('q'),
     url.searchParams.get('query'),
     url.searchParams.get('search'),
+    url.searchParams.get('action'),
   ]
 
   if (url.hash) {
     const hash = url.hash.slice(1)
     queryCandidates.push(hash)
+    if (hash.startsWith('!')) {
+      queryCandidates.push(hash.slice(1))
+    }
     if (hash.includes('?')) {
       const hashParams = new URLSearchParams(hash.slice(hash.indexOf('?') + 1))
       queryCandidates.push(hashParams.get('q'))
       queryCandidates.push(hashParams.get('query'))
+      queryCandidates.push(hashParams.get('search'))
+      queryCandidates.push(hashParams.get('action'))
     }
     if (hash.includes('q=')) {
       const matched = hash.match(/(?:^|[?&#])q=([^&#]+)/i)
+      if (matched?.[1]) queryCandidates.push(matched[1])
+    }
+    if (hash.includes('search=')) {
+      const matched = hash.match(/(?:^|[?&#])search=([^&#]+)/i)
+      if (matched?.[1]) queryCandidates.push(matched[1])
+    }
+    if (hash.includes('action=')) {
+      const matched = hash.match(/(?:^|[?&#])action=([^&#]+)/i)
       if (matched?.[1]) queryCandidates.push(matched[1])
     }
   }
@@ -328,6 +349,14 @@ function extractRawQueryCandidates(value) {
   const searchMatch = raw.match(/(?:^|[?&#\s])search=([^&#\s]+)/i)
   if (searchMatch?.[1]) {
     const normalizedQuery = extractStructuredQueryCandidate(searchMatch[1])
+    if (normalizedQuery) {
+      candidates.push(normalizedQuery)
+    }
+  }
+
+  const actionMatch = raw.match(/(?:^|[?&#\s])action=([^&#\s]+)/i)
+  if (actionMatch?.[1]) {
+    const normalizedQuery = extractStructuredQueryCandidate(actionMatch[1])
     if (normalizedQuery) {
       candidates.push(normalizedQuery)
     }
