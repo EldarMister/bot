@@ -953,7 +953,11 @@ export async function startStandaloneTelegramFreshBot() {
       return
     }
 
-    if (parsedCustomFilters.length && (currentSession?.awaitingCustomFilter || /encar\.com|q=\(|^\s*\(/i.test(rawText))) {
+    if (parsedCustomFilters.length && (
+      currentSession?.awaitingCustomFilter
+      || currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
+      || /encar\.com|q=\(|^\s*\(/i.test(rawText)
+    )) {
       const nextCustomFilters = normalizeCustomFilters([
         ...getSessionCustomFilters(currentSession),
         ...parsedCustomFilters,
