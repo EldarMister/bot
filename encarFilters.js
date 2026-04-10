@@ -229,6 +229,30 @@ function normalizeQueryText(value) {
   return query
 }
 
+function collectNestedQueryCandidates(value, bucket = [], depth = 0) {
+  if (depth > 4 || value == null) return bucket
+
+  if (typeof value === 'string') {
+    bucket.push(value)
+    return bucket
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectNestedQueryCandidates(item, bucket, depth + 1)
+    }
+    return bucket
+  }
+
+  if (typeof value === 'object') {
+    for (const nestedValue of Object.values(value)) {
+      collectNestedQueryCandidates(nestedValue, bucket, depth + 1)
+    }
+  }
+
+  return bucket
+}
+
 function extractStructuredQueryCandidate(value) {
   const normalizedValue = normalizeQueryText(value)
   if (!normalizedValue) return ''
@@ -243,7 +267,7 @@ function extractStructuredQueryCandidate(value) {
 
   try {
     const parsed = JSON.parse(normalizedValue)
-    const nestedCandidates = [
+    const nestedCandidates = collectNestedQueryCandidates([
       parsed?.action,
       parsed?.q,
       parsed?.query,
@@ -251,15 +275,40 @@ function extractStructuredQueryCandidate(value) {
       parsed?.payload?.action,
       parsed?.payload?.q,
       parsed?.payload?.query,
-    ]
+      parsed,
+    ])
 
     for (const nestedCandidate of nestedCandidates) {
       const nestedQuery = normalizeQueryText(nestedCandidate)
       if (nestedQuery.startsWith('(') && nestedQuery.endsWith(')')) {
         return nestedQuery
       }
+      const recursiveQuery = extractStructuredQueryCandidate(nestedQuery)
+      if (recursiveQuery.startsWith('(') && recursiveQuery.endsWith(')')) {
+        return recursiveQuery
+      }
     }
   } catch {
+    const regexCandidates = [
+      /"(?:action|q|query|search)"\s*:\s*"((?:\\.|[^"])*)"/i,
+      /'(?:action|q|query|search)'\s*:\s*'((?:\\.|[^'])*)'/i,
+    ]
+
+    for (const pattern of regexCandidates) {
+      const matched = normalizedValue.match(pattern)
+      if (!matched?.[1]) continue
+
+      const nestedQuery = normalizeQueryText(
+        matched[1]
+          .replace(/\\"/g, '"')
+          .replace(/\\u0026/gi, '&')
+          .replace(/\\\\/g, '\\'),
+      )
+      if (nestedQuery.startsWith('(') && nestedQuery.endsWith(')')) {
+        return nestedQuery
+      }
+    }
+
     return ''
   }
 
