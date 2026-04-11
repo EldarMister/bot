@@ -221,10 +221,14 @@ function normalizeQueryText(value) {
 
   query = query.replace(/^[#!]+/, '')
   query = query.replace(/^\/+/, '')
+  query = query.replace(/^(?:amp;)+/i, '')
 
   if (query.startsWith('q=')) return normalizeQueryText(query.slice(2))
   if (query.startsWith('search=')) return normalizeQueryText(query.slice(7))
   if (query.startsWith('action=')) return normalizeQueryText(query.slice(7))
+  if (/^ex_action=/i.test(query)) return normalizeQueryText(query.slice(10))
+  if (/^filter=/i.test(query)) return normalizeQueryText(query.slice(7))
+  if (/^queryStr=/i.test(query)) return normalizeQueryText(query.slice(9))
 
   return query
 }
@@ -391,9 +395,19 @@ function extractStructuredQueryCandidate(value) {
       parsed?.q,
       parsed?.query,
       parsed?.search,
+      parsed?.filter,
+      parsed?.queryStr,
+      parsed?.ex_action,
       parsed?.payload?.action,
       parsed?.payload?.q,
       parsed?.payload?.query,
+      parsed?.payload?.search,
+      parsed?.payload?.filter,
+      parsed?.payload?.queryStr,
+      parsed?.payload?.ex_action,
+      parsed?.param?.filter,
+      parsed?.params?.filter,
+      parsed?.data?.filter,
       parsed,
     ])
 
@@ -409,8 +423,8 @@ function extractStructuredQueryCandidate(value) {
     }
   } catch {
     const regexCandidates = [
-      /"(?:action|q|query|search)"\s*:\s*"((?:\\.|[^"])*)"/i,
-      /'(?:action|q|query|search)'\s*:\s*'((?:\\.|[^'])*)'/i,
+      /"(?:action|q|query|search|filter|queryStr|ex_action)"\s*:\s*"((?:\\.|[^"])*)"/i,
+      /'(?:action|q|query|search|filter|queryStr|ex_action)'\s*:\s*'((?:\\.|[^'])*)'/i,
     ]
 
     for (const pattern of regexCandidates) {
@@ -437,6 +451,11 @@ function extractStructuredQueryCandidate(value) {
 function extractCustomQueryFromUrl(rawUrl) {
   let candidate = cleanText(rawUrl)
   if (!candidate) return null
+  candidate = candidate
+    .replace(/&amp;/gi, '&')
+    .replace(/&#38;/gi, '&')
+    .replace(/^\((https?:\/\/.+)\)$/i, '$1')
+    .replace(/[>"'`,.;]+$/g, '')
   if (!/^https?:\/\//i.test(candidate) && /encar\.com/i.test(candidate)) {
     candidate = `https://${candidate.replace(/^\/+/, '')}`
   }
@@ -448,12 +467,15 @@ function extractCustomQueryFromUrl(rawUrl) {
     return null
   }
 
-  const queryCandidates = [
-    url.searchParams.get('q'),
-    url.searchParams.get('query'),
-    url.searchParams.get('search'),
-    url.searchParams.get('action'),
-  ]
+  const queryCandidates = []
+  const allowedParamKeys = new Set(['q', 'query', 'search', 'action', 'filter', 'querystr', 'ex_action'])
+
+  for (const [rawKey, rawValue] of url.searchParams.entries()) {
+    const normalizedKey = cleanText(rawKey).replace(/^(?:amp;)+/i, '').toLowerCase()
+    if (allowedParamKeys.has(normalizedKey)) {
+      queryCandidates.push(rawValue)
+    }
+  }
 
   if (url.hash) {
     const hash = url.hash.slice(1)
@@ -463,10 +485,12 @@ function extractCustomQueryFromUrl(rawUrl) {
     }
     if (hash.includes('?')) {
       const hashParams = new URLSearchParams(hash.slice(hash.indexOf('?') + 1))
-      queryCandidates.push(hashParams.get('q'))
-      queryCandidates.push(hashParams.get('query'))
-      queryCandidates.push(hashParams.get('search'))
-      queryCandidates.push(hashParams.get('action'))
+      for (const [rawKey, rawValue] of hashParams.entries()) {
+        const normalizedKey = cleanText(rawKey).replace(/^(?:amp;)+/i, '').toLowerCase()
+        if (allowedParamKeys.has(normalizedKey)) {
+          queryCandidates.push(rawValue)
+        }
+      }
     }
     if (hash.includes('q=')) {
       const matched = hash.match(/(?:^|[?&#])q=([^&#]+)/i)
@@ -478,6 +502,18 @@ function extractCustomQueryFromUrl(rawUrl) {
     }
     if (hash.includes('action=')) {
       const matched = hash.match(/(?:^|[?&#])action=([^&#]+)/i)
+      if (matched?.[1]) queryCandidates.push(matched[1])
+    }
+    if (hash.includes('filter=')) {
+      const matched = hash.match(/(?:^|[?&#])filter=([^&#]+)/i)
+      if (matched?.[1]) queryCandidates.push(matched[1])
+    }
+    if (hash.includes('queryStr=')) {
+      const matched = hash.match(/(?:^|[?&#])queryStr=([^&#]+)/i)
+      if (matched?.[1]) queryCandidates.push(matched[1])
+    }
+    if (hash.includes('ex_action=')) {
+      const matched = hash.match(/(?:^|[?&#])ex_action=([^&#]+)/i)
       if (matched?.[1]) queryCandidates.push(matched[1])
     }
   }
@@ -525,6 +561,30 @@ function extractRawQueryCandidates(value) {
   const actionMatch = raw.match(/(?:^|[?&#\s])action=([^&#\s]+)/i)
   if (actionMatch?.[1]) {
     const normalizedQuery = extractStructuredQueryCandidate(actionMatch[1])
+    if (normalizedQuery) {
+      candidates.push(normalizedQuery)
+    }
+  }
+
+  const filterMatch = raw.match(/(?:^|[?&#\s])filter=([^&#\s]+)/i)
+  if (filterMatch?.[1]) {
+    const normalizedQuery = extractStructuredQueryCandidate(filterMatch[1])
+    if (normalizedQuery) {
+      candidates.push(normalizedQuery)
+    }
+  }
+
+  const queryStrMatch = raw.match(/(?:^|[?&#\s])queryStr=([^&#\s]+)/i)
+  if (queryStrMatch?.[1]) {
+    const normalizedQuery = extractStructuredQueryCandidate(queryStrMatch[1])
+    if (normalizedQuery) {
+      candidates.push(normalizedQuery)
+    }
+  }
+
+  const exActionMatch = raw.match(/(?:^|[?&#\s])ex_action=([^&#\s]+)/i)
+  if (exActionMatch?.[1]) {
+    const normalizedQuery = extractStructuredQueryCandidate(exActionMatch[1])
     if (normalizedQuery) {
       candidates.push(normalizedQuery)
     }
