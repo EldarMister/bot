@@ -224,6 +224,7 @@ function normalizeQueryText(value) {
   query = query.replace(/^(?:amp;)+/i, '')
 
   if (query.startsWith('q=')) return normalizeQueryText(query.slice(2))
+  if (/^query=/i.test(query)) return normalizeQueryText(query.slice(6))
   if (query.startsWith('search=')) return normalizeQueryText(query.slice(7))
   if (query.startsWith('action=')) return normalizeQueryText(query.slice(7))
   if (/^ex_action=/i.test(query)) return normalizeQueryText(query.slice(10))

@@ -761,6 +761,20 @@ function parseYear(category = {}, fallbackRaw = {}) {
   return cleanText(fallbackRaw?.Year).slice(0, 4)
 }
 
+function readListManageCount(raw, ...paths) {
+  for (const path of paths) {
+    const keys = path.split('.')
+    let val = raw
+    for (const key of keys) {
+      if (val == null) break
+      val = val[key]
+    }
+    const num = Number(val)
+    if (Number.isFinite(num)) return num
+  }
+  return -1
+}
+
 function buildManageMetrics(manage = {}, contact = {}) {
   const callMetricCandidates = [
     ['manage.callCount', manage?.callCount],
@@ -1230,6 +1244,7 @@ export function createStandaloneEncarClient(env = {}) {
     for (const initialGroup of initialGroups) {
       let offset = 0
       let stalePages = 0
+      let knownOnlyPages = 0
       let groupPagesProcessed = 0
 
       while (groupPagesProcessed < maxPages) {
@@ -1256,12 +1271,17 @@ export function createStandaloneEncarClient(env = {}) {
         groupPagesProcessed += 1
         offset += pageCars.length
         let pageFreshHits = 0
+        let pageNewCarsChecked = 0
+
+        // Compute once per page — avoids rebuilding filter groups for every car
+        const currentGroup = liveGroup
+        const isCustomGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_CUSTOM
+        const isBrandGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_BRAND
+        const activeSessionChatIds = new Set(getActiveSessions().map((s) => s.chatId))
+        const activeChatIds = currentGroup.chatIds.filter((id) => activeSessionChatIds.has(id))
 
         for (const raw of pageCars) {
-          const currentGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === liveGroup.filterKey)
-          if (!currentGroup?.chatIds?.length) break
-          const isCustomGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_CUSTOM
-          const isBrandGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_BRAND
+          if (!activeChatIds.length) break
 
           const encarId = cleanText(raw?.Id)
           if (!encarId) continue
@@ -1282,6 +1302,22 @@ export function createStandaloneEncarClient(env = {}) {
           }
 
           if (!matchesSessionFilter(rawListing, currentGroup)) continue
+
+          // Pre-screen with list-level manage counts to avoid unnecessary detail API calls.
+          // Encar list results typically include ManageCnt with viewCount/callCount.
+          // If the listing is already clearly not fresh, remember and skip it immediately.
+          const listViewCount = readListManageCount(raw, 'ManageCnt.ViewCount', 'Manage.ViewCount', 'viewCount')
+          const listCallCount = readListManageCount(raw, 'ManageCnt.CallCount', 'ManageCnt.ConsultCount', 'Manage.CallCount', 'callCount')
+          if (
+            (listViewCount >= 0 && listViewCount > FRESH_RULES.maxViewCount) ||
+            (listCallCount >= 0 && listCallCount > FRESH_RULES.maxCallCount)
+          ) {
+            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+            pageNewCarsChecked += 1
+            continue
+          }
+
+          pageNewCarsChecked += 1
 
           let detail = null
           try {
@@ -1305,8 +1341,7 @@ export function createStandaloneEncarClient(env = {}) {
 
           if (!qualifiesFresh) continue
 
-          const latestGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === currentGroup.filterKey)
-          const matchingChatIds = (latestGroup?.chatIds || []).filter((chatId) => !stateStore.getSeenListing(`chat:${chatId}::${encarId}`))
+          const matchingChatIds = activeChatIds.filter((chatId) => !stateStore.getSeenListing(`chat:${chatId}::${encarId}`))
           if (!matchingChatIds.length) continue
 
           pageFreshHits += 1
@@ -1336,13 +1371,25 @@ export function createStandaloneEncarClient(env = {}) {
           }
         }
 
-        if (pageFreshHits === 0) {
-          stalePages += 1
+        // Smarter stale-page tracking:
+        // - If every car on this page was already in seenListings (pageNewCarsChecked === 0),
+        //   it means only re-modified old listings are at the top. With ModifiedDate sort,
+        //   any truly new listing would have appeared earlier, so stop quickly.
+        // - If the page had new (unseen) cars but none qualified as fresh, that is a
+        //   genuinely stale page — apply the normal stalePageLimit.
+        if (pageNewCarsChecked === 0) {
+          knownOnlyPages += 1
+          if (knownOnlyPages >= 2) break
         } else {
-          stalePages = 0
+          knownOnlyPages = 0
+          if (pageFreshHits === 0) {
+            stalePages += 1
+          } else {
+            stalePages = 0
+          }
+          if (stalePages >= stalePageLimit) break
         }
 
-        if (stalePages >= stalePageLimit) break
         if (pageCars.length < LIST_PAGE_SIZE) break
 
         if (pageDelayMs > 0) {
