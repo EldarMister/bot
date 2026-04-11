@@ -229,6 +229,125 @@ function normalizeQueryText(value) {
   return query
 }
 
+function stripLegacyQueryNodePrefixes(value) {
+  return cleanText(value).replace(
+    /(^|[^A-Za-z])C\.(?=[A-Z][A-Za-z]+\.)/g,
+    '$1',
+  )
+}
+
+function findMatchingParenIndex(value, startIndex) {
+  let depth = 0
+  for (let index = startIndex; index < value.length; index += 1) {
+    if (value[index] === '(') {
+      depth += 1
+      continue
+    }
+
+    if (value[index] === ')') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+
+  return -1
+}
+
+function shouldFlattenLegacyQueryGroup(value) {
+  const normalized = cleanText(stripLegacyQueryNodePrefixes(value))
+  if (!normalized) return false
+  if (/^(?:And|Or|Not)\./.test(normalized)) return false
+  return /^[A-Z][A-Za-z]+\./.test(normalized)
+}
+
+function looksLikeLegacyCustomQuery(value) {
+  const normalized = cleanText(value)
+  if (!normalized) return false
+
+  return normalized.includes('C.')
+    || /\._\.\((?:C\.)?[A-Z][A-Za-z]+\./.test(normalized)
+}
+
+function repairLegacyClauseSeparators(value) {
+  return cleanText(value)
+    .replace(/([A-Za-z]+\([^()]*\))(?=_\.)/g, '$1.')
+    .replace(/([A-Za-z]+\([^()]*\))(?=\))/g, '$1.')
+}
+
+export function normalizeLegacyCustomQuery(value) {
+  const raw = cleanText(value)
+  if (!raw) return ''
+  if (!looksLikeLegacyCustomQuery(raw)) return raw
+
+  function visit(segment) {
+    let output = ''
+
+    for (let index = 0; index < segment.length; index += 1) {
+      const char = segment[index]
+      if (char !== '(') {
+        output += char
+        continue
+      }
+
+      const previousChar = index > 0 ? segment[index - 1] : ''
+      if (/[A-Za-z0-9]/.test(previousChar)) {
+        const closingIndex = findMatchingParenIndex(segment, index)
+        if (closingIndex === -1) {
+          output += segment.slice(index)
+          break
+        }
+
+        output += segment.slice(index, closingIndex + 1)
+        index = closingIndex
+        continue
+      }
+
+      const closingIndex = findMatchingParenIndex(segment, index)
+      if (closingIndex === -1) {
+        output += segment.slice(index)
+        break
+      }
+
+      const inner = visit(segment.slice(index + 1, closingIndex))
+      const strippedInner = stripLegacyQueryNodePrefixes(inner)
+      if (shouldFlattenLegacyQueryGroup(strippedInner)) {
+        output += strippedInner
+      } else {
+        output += `(${strippedInner})`
+      }
+
+      index = closingIndex
+    }
+
+    return repairLegacyClauseSeparators(
+      stripLegacyQueryNodePrefixes(output).replace(/\.\._\./g, '._.'),
+    )
+  }
+
+  return repairLegacyClauseSeparators(visit(raw))
+}
+
+export function buildCustomQueryVariants(value) {
+  const raw = normalizeQueryText(value)
+  if (!raw.startsWith('(') || !raw.endsWith(')')) return []
+
+  const variants = []
+  const seen = new Set()
+  const pushVariant = (candidate) => {
+    const normalized = cleanText(candidate)
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    variants.push(normalized)
+  }
+
+  if (looksLikeLegacyCustomQuery(raw)) {
+    pushVariant(normalizeLegacyCustomQuery(raw))
+  }
+
+  pushVariant(raw)
+  return variants
+}
+
 function collectNestedQueryCandidates(value, bucket = [], depth = 0) {
   if (depth > 4 || value == null) return bucket
 
@@ -587,6 +706,7 @@ export function getSessionFilterEntries(session = {}) {
       filterMode: FILTER_MODE_CUSTOM,
       filterKey: `custom:${hashText(filter.query)}`,
       query: filter.query,
+      queryVariants: buildCustomQueryVariants(filter.query),
       customFilterId: filter.id,
       url: filter.url,
       label: filter.url || filter.query,

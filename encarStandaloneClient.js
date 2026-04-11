@@ -837,6 +837,9 @@ function buildFilterGroups(sessions = []) {
       const existing = groups.get(filterKey) || {
         filterKey,
         query,
+        queryVariants: Array.isArray(filterEntry?.queryVariants) && filterEntry.queryVariants.length
+          ? filterEntry.queryVariants
+          : [query],
         filterMode: normalizeFilterMode(filterEntry?.filterMode),
         parseScope: normalizeParseScope(filterEntry?.parseScope),
         brandKey: cleanText(filterEntry?.brandKey),
@@ -869,6 +872,25 @@ function passesFreshRules(manage) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function getFilterQueryVariants(filterGroup = {}) {
+  const seen = new Set()
+  const variants = []
+
+  const addVariant = (candidate) => {
+    const normalized = cleanText(candidate)
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    variants.push(normalized)
+  }
+
+  for (const queryVariant of Array.isArray(filterGroup?.queryVariants) ? filterGroup.queryVariants : []) {
+    addVariant(queryVariant)
+  }
+
+  addVariant(filterGroup?.query)
+  return variants
 }
 
 function createApiClient(timeoutMs) {
@@ -919,11 +941,11 @@ export function createStandaloneEncarClient(env = {}) {
   const detailDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_DETAIL_DELAY_MS || '150'), 10) || 150)
   const pageDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_PAGE_DELAY_MS || '250'), 10) || 250)
 
-  async function fetchListPageDirect(offset = 0, filterGroup = null) {
+  async function fetchListPageDirectForQuery(offset = 0, query = '') {
     const response = await apiClient.get('/search/car/list/premium', {
       params: {
         count: true,
-        q: cleanText(filterGroup?.query),
+        q: cleanText(query),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
       },
       headers: {
@@ -937,14 +959,38 @@ export function createStandaloneEncarClient(env = {}) {
     }
   }
 
-  async function fetchListPageViaProxy(offset = 0, filterGroup = null) {
+  async function fetchListPageDirect(offset = 0, filterGroup = null) {
+    const queryVariants = getFilterQueryVariants(filterGroup)
+    let lastError = null
+
+    for (const query of queryVariants) {
+      try {
+        const page = await fetchListPageDirectForQuery(offset, query)
+        return {
+          ...page,
+          effectiveQuery: query,
+          queryVariantFallbackUsed: query !== cleanText(filterGroup?.query),
+        }
+      } catch (error) {
+        lastError = error
+        if (Number(error?.response?.status) === 400 && query !== queryVariants.at(-1)) {
+          continue
+        }
+        throw error
+      }
+    }
+
+    throw lastError || new Error('Failed to fetch Encar list')
+  }
+
+  async function fetchListPageViaProxyForQuery(offset = 0, query = '') {
     const data = await fetchViaEncarProxy(
       {
         endpoint: 'list',
         offset,
         limit: LIST_PAGE_SIZE,
         count: true,
-        q: cleanText(filterGroup?.query),
+        q: cleanText(query),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
         sort: 'ModifiedDate',
       },
@@ -961,6 +1007,30 @@ export function createStandaloneEncarClient(env = {}) {
       total: Number(data?.Count) || 0,
       cars: Array.isArray(data?.SearchResults) ? data.SearchResults : [],
     }
+  }
+
+  async function fetchListPageViaProxy(offset = 0, filterGroup = null) {
+    const queryVariants = getFilterQueryVariants(filterGroup)
+    let lastError = null
+
+    for (const query of queryVariants) {
+      try {
+        const page = await fetchListPageViaProxyForQuery(offset, query)
+        return {
+          ...page,
+          effectiveQuery: query,
+          queryVariantFallbackUsed: query !== cleanText(filterGroup?.query),
+        }
+      } catch (error) {
+        lastError = error
+        if (Number(error?.response?.status) === 400 && query !== queryVariants.at(-1)) {
+          continue
+        }
+        throw error
+      }
+    }
+
+    throw lastError || new Error('Failed to fetch Encar list via proxy')
   }
 
   async function fetchListPage(offset = 0, filterGroup = null) {
@@ -1166,9 +1236,18 @@ export function createStandaloneEncarClient(env = {}) {
         const liveGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === initialGroup.filterKey)
         if (!liveGroup?.chatIds?.length) break
 
-        const page = await fetchListPage(offset, liveGroup)
+        let page
+        try {
+          page = await fetchListPage(offset, liveGroup)
+        } catch (error) {
+          onLog(`LIST_FETCH_FAILED | filter=${liveGroup.filterKey} | offset=${offset} | ${cleanText(error?.message) || 'unknown error'}`)
+          break
+        }
         if (Array.isArray(page?.sourceDiagnostics) && page.sourceDiagnostics.length) {
           onLog(`LIST_SOURCE_FALLBACK | filter=${liveGroup.filterKey} | offset=${offset} | source=${cleanText(page?.source) || 'unknown'} | failures=${page.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
+        }
+        if (page?.queryVariantFallbackUsed && page?.effectiveQuery) {
+          onLog(`LIST_QUERY_NORMALIZED | filter=${liveGroup.filterKey} | offset=${offset}`)
         }
         const pageCars = Array.isArray(page.cars) ? page.cars : []
         if (!pageCars.length) break
