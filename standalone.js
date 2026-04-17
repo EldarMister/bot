@@ -3,6 +3,8 @@ import dotenv from 'dotenv'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import {
+  BRAND_FILTER_MAX_YEAR,
+  BRAND_FILTER_MIN_YEAR,
   BRAND_PRESETS,
   FILTER_MODE_BRAND,
   FILTER_MODE_CUSTOM,
@@ -116,15 +118,13 @@ function getBrandButtonLabel(brandKey, session = {}) {
 }
 
 function getBrandFiltersButtonLabel(session = {}) {
-  return normalizeFilterMode(session?.filterMode) === FILTER_MODE_BRAND
-    && getSessionBrandSelections(session).length
+  return getSessionBrandSelections(session).length > 0
     ? `✅ ${BUTTON_BRAND_FILTERS}`
     : BUTTON_BRAND_FILTERS
 }
 
 function getCustomFilterButtonLabel(session = {}) {
-  return normalizeFilterMode(session?.filterMode) === FILTER_MODE_CUSTOM
-    && getSessionCustomFilters(session).length
+  return getSessionCustomFilters(session).length > 0
     ? `✅ ${BUTTON_CUSTOM_FILTER}`
     : BUTTON_CUSTOM_FILTER
 }
@@ -141,18 +141,8 @@ function parseDeleteLinkButton(text) {
 }
 
 function getDeleteFilterButtons(session = {}) {
-  const filterMode = normalizeFilterMode(session?.filterMode)
-  if (filterMode === FILTER_MODE_BRAND) {
-    return getSessionBrandSelections(session)
-      .map((_, index) => getDeleteLinkButtonLabel(index + 1))
-  }
-
-  if (filterMode === FILTER_MODE_CUSTOM) {
-    return getSessionCustomFilters(session)
-      .map((_, index) => getDeleteLinkButtonLabel(index + 1))
-  }
-
-  return []
+  const total = getSessionBrandSelections(session).length + getSessionCustomFilters(session).length
+  return Array.from({ length: total }, (_, i) => getDeleteLinkButtonLabel(i + 1))
 }
 
 function parseYearButton(text) {
@@ -296,7 +286,8 @@ function buildCustomFiltersLines(session = {}) {
 
 function buildStatusText(session) {
   const isActive = Boolean(session?.isActive)
-  const filterMode = normalizeFilterMode(session?.filterMode)
+  const brandSelections = getSessionBrandSelections(session)
+  const customFilters = getSessionCustomFilters(session)
   const lines = [
     '🤖 Парсинг Encar через Telegram',
     `📊 Статус: ${isActive ? '🟢 включен' : '🔴 выключен'}`,
@@ -304,11 +295,16 @@ function buildStatusText(session) {
     '',
   ]
 
-  if (filterMode === FILTER_MODE_BRAND) {
+  if (brandSelections.length) {
     lines.push(...buildBrandSelectionsLines(session))
-  } else if (filterMode === FILTER_MODE_CUSTOM) {
+  }
+
+  if (customFilters.length) {
+    if (brandSelections.length) lines.push('')
     lines.push(...buildCustomFiltersLines(session))
-  } else {
+  }
+
+  if (!brandSelections.length && !customFilters.length) {
     lines.push('🚗 По умолчанию бот ищет по всем машинам.')
   }
 
@@ -346,7 +342,7 @@ function buildBrandYearsText(session) {
   const preset = getBrandPreset(session?.pendingBrandKey)
   return [
     `📅 Выберите год для ${preset?.label || 'марки'}.`,
-    'Диапазон: 2010-2026.',
+    `Диапазон: ${BRAND_FILTER_MIN_YEAR}-${BRAND_FILTER_MAX_YEAR}.`,
   ].join('\n')
 }
 
@@ -821,57 +817,23 @@ export async function startStandaloneTelegramFreshBot() {
       return
     }
 
-    if (deleteCustomIndex > 0 && normalizeFilterMode(currentSession?.filterMode) === FILTER_MODE_BRAND) {
-      const currentBrands = getSessionBrandSelections(currentSession)
-      if (deleteCustomIndex <= currentBrands.length) {
-        const nextBrands = currentBrands.filter((_, index) => index !== deleteCustomIndex - 1)
-        const nextFilterMode = nextBrands.length
-          ? FILTER_MODE_BRAND
-          : getSessionCustomFilters(currentSession).length
-            ? FILTER_MODE_CUSTOM
-            : FILTER_MODE_SCOPE
-
-        const session = stateStore.upsertSession(chatId, {
-          ...commonUserFields,
-          filterMode: nextFilterMode,
-          brandSelections: nextBrands,
-          brandKey: nextBrands.at(-1)?.brandKey || '',
-          currentSection: KEYBOARD_SECTION_MAIN,
-        })
-        await stateStore.flush()
-        wakeParserLoop()
-        await respondWithControl(
-          message,
-          [
-            `🗑 Фильтр ${deleteCustomIndex} удалён.`,
-            '',
-            buildStatusText(session),
-          ].join('\n'),
-          session,
-          KEYBOARD_SECTION_MAIN,
-        )
-        return
-      }
-    }
-
     if (deleteCustomIndex > 0) {
+      const currentBrands = getSessionBrandSelections(currentSession)
       const currentCustomFilters = getSessionCustomFilters(currentSession)
-      if (deleteCustomIndex <= currentCustomFilters.length) {
+      const isInCustomSection = currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
+
+      if (isInCustomSection && deleteCustomIndex <= currentCustomFilters.length) {
+        // В разделе свои ссылки: кнопки 1..M удаляют только свои фильтры
         const nextCustomFilters = currentCustomFilters.filter((_, index) => index !== deleteCustomIndex - 1)
         const nextFilterMode = nextCustomFilters.length
           ? FILTER_MODE_CUSTOM
-          : getSessionBrandSelections(currentSession).length
-            ? FILTER_MODE_BRAND
-            : FILTER_MODE_SCOPE
-        const nextSection = currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
-          ? KEYBOARD_SECTION_CUSTOM
-          : KEYBOARD_SECTION_MAIN
+          : currentBrands.length ? FILTER_MODE_BRAND : FILTER_MODE_SCOPE
 
         const session = stateStore.upsertSession(chatId, {
           ...commonUserFields,
           filterMode: nextFilterMode,
           customFilters: nextCustomFilters,
-          currentSection: nextSection,
+          currentSection: KEYBOARD_SECTION_CUSTOM,
           awaitingCustomFilter: false,
           customFilterUrl: nextCustomFilters.at(-1)?.url || '',
           customFilterQuery: nextCustomFilters.at(-1)?.query || '',
@@ -880,13 +842,62 @@ export async function startStandaloneTelegramFreshBot() {
         wakeParserLoop()
         await respondWithControl(
           message,
-          [
-            `🗑 Ссылка ${deleteCustomIndex} удалена.`,
-            '',
-            nextSection === KEYBOARD_SECTION_CUSTOM ? buildCustomFilterText(session) : buildStatusText(session),
-          ].join('\n'),
+          [`🗑 Ссылка ${deleteCustomIndex} удалена.`, '', buildCustomFilterText(session)].join('\n'),
           session,
-          nextSection,
+          KEYBOARD_SECTION_CUSTOM,
+        )
+        return
+      }
+
+      // На главном экране: кнопки 1..N идут по маркам, затем N+1..N+M по своим ссылкам
+      const total = currentBrands.length + currentCustomFilters.length
+      if (!isInCustomSection && deleteCustomIndex <= total) {
+        if (deleteCustomIndex <= currentBrands.length) {
+          const nextBrands = currentBrands.filter((_, index) => index !== deleteCustomIndex - 1)
+          const nextFilterMode = nextBrands.length
+            ? FILTER_MODE_BRAND
+            : currentCustomFilters.length ? FILTER_MODE_CUSTOM : FILTER_MODE_SCOPE
+
+          const session = stateStore.upsertSession(chatId, {
+            ...commonUserFields,
+            filterMode: nextFilterMode,
+            brandSelections: nextBrands,
+            brandKey: nextBrands.at(-1)?.brandKey || '',
+            currentSection: KEYBOARD_SECTION_MAIN,
+          })
+          await stateStore.flush()
+          wakeParserLoop()
+          await respondWithControl(
+            message,
+            [`🗑 Фильтр ${deleteCustomIndex} удалён.`, '', buildStatusText(session)].join('\n'),
+            session,
+            KEYBOARD_SECTION_MAIN,
+          )
+          return
+        }
+
+        const customIndex = deleteCustomIndex - currentBrands.length - 1
+        const nextCustomFilters = currentCustomFilters.filter((_, index) => index !== customIndex)
+        const nextFilterMode = currentBrands.length
+          ? FILTER_MODE_BRAND
+          : nextCustomFilters.length ? FILTER_MODE_CUSTOM : FILTER_MODE_SCOPE
+
+        const session = stateStore.upsertSession(chatId, {
+          ...commonUserFields,
+          filterMode: nextFilterMode,
+          customFilters: nextCustomFilters,
+          currentSection: KEYBOARD_SECTION_MAIN,
+          awaitingCustomFilter: false,
+          customFilterUrl: nextCustomFilters.at(-1)?.url || '',
+          customFilterQuery: nextCustomFilters.at(-1)?.query || '',
+        })
+        await stateStore.flush()
+        wakeParserLoop()
+        await respondWithControl(
+          message,
+          [`🗑 Фильтр ${deleteCustomIndex} удалён.`, '', buildStatusText(session)].join('\n'),
+          session,
+          KEYBOARD_SECTION_MAIN,
         )
         return
       }
@@ -956,7 +967,6 @@ export async function startStandaloneTelegramFreshBot() {
     if (parsedCustomFilters.length && (
       currentSession?.awaitingCustomFilter
       || currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
-      || /encar\.com|q=\(|^\s*\(/i.test(rawText)
     )) {
       const nextCustomFilters = normalizeCustomFilters([
         ...getSessionCustomFilters(currentSession),

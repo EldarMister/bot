@@ -26,7 +26,7 @@ const DEFAULT_STALE_PAGE_LIMIT = 4
 const FRESH_RULES = Object.freeze({
   maxViewCount: 6,
   maxCallCount: 0,
-  maxSubscribeCount: 0,
+  maxSubscribeCount: 3,
 })
 
 const JAPANESE_BRAND_ALIASES = [

@@ -523,7 +523,7 @@ function extractCustomQueryFromUrl(rawUrl) {
     const normalizedQuery = extractStructuredQueryCandidate(candidateQuery)
     if (normalizedQuery.startsWith('(') && normalizedQuery.endsWith(')')) {
       return {
-        id: `custom_${hashText(normalizedQuery)}`,
+        id: `custom_${hashText(url.toString())}`,
         url: url.toString(),
         query: normalizedQuery,
       }
@@ -685,19 +685,17 @@ export function normalizeBrandSelections(value, legacyBrandKey = '') {
 export function normalizeCustomFilters(value, legacyCustomFilterUrl = '', legacyCustomFilterQuery = '') {
   const rawFilters = Array.isArray(value) ? value : []
   const filters = []
-  const seenQueries = new Set()
+  const seenIds = new Set()
 
   for (const filter of rawFilters) {
     const query = normalizeQueryText(filter?.query)
     if (!query || !query.startsWith('(') || !query.endsWith(')')) continue
-    if (seenQueries.has(query)) continue
-    seenQueries.add(query)
+    const url = normalizeStoredUrl(filter?.url)
+    const id = cleanText(filter?.id) || `custom_${hashText(url || query)}`
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
 
-    filters.push({
-      id: cleanText(filter?.id) || `custom_${hashText(query)}`,
-      url: normalizeStoredUrl(filter?.url),
-      query,
-    })
+    filters.push({ id, url, query })
   }
 
   const legacyQuery = normalizeQueryText(legacyCustomFilterQuery)
@@ -734,24 +732,22 @@ export function getFilterSummary(session = {}) {
   const brandSelections = normalizeBrandSelections(session?.brandSelections, session?.brandKey)
   const customFilters = normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
 
-  if (filterMode === FILTER_MODE_BRAND) {
-    return brandSelections.length ? `Марки: ${brandSelections.length}` : 'Все машины'
-  }
+  const parts = []
+  if (brandSelections.length) parts.push(`Марки: ${brandSelections.length}`)
+  if (customFilters.length) parts.push(`Ссылки: ${customFilters.length}`)
+  if (parts.length) return parts.join(', ')
 
-  if (filterMode === FILTER_MODE_CUSTOM) {
-    return customFilters.length ? `Свои ссылки: ${customFilters.length}` : 'Все машины'
-  }
-
-  return 'Все машины'
+  return getScopeLabel(normalizeParseScope(session?.parseScope))
 }
 
 export function getSessionFilterEntries(session = {}) {
-  const filterMode = normalizeFilterMode(session?.filterMode)
   const brandSelections = normalizeBrandSelections(session?.brandSelections, session?.brandKey)
   const customFilters = normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
 
-  if (filterMode === FILTER_MODE_BRAND && brandSelections.length) {
-    return brandSelections.map((selection) => ({
+  const entries = []
+
+  for (const selection of brandSelections) {
+    entries.push({
       filterMode: FILTER_MODE_BRAND,
       filterKey: `brand:${getBrandSelectionKey(selection)}`,
       query: buildBrandListQuery(selection.brandKey, selection.year, selection.month),
@@ -759,27 +755,30 @@ export function getSessionFilterEntries(session = {}) {
       year: selection.year,
       month: selection.month,
       label: getBrandSelectionLabel(selection),
-    }))
+    })
   }
 
-  if (filterMode === FILTER_MODE_CUSTOM && customFilters.length) {
-    return customFilters.map((filter) => ({
+  for (const filter of customFilters) {
+    entries.push({
       filterMode: FILTER_MODE_CUSTOM,
-      filterKey: `custom:${hashText(filter.query)}`,
+      filterKey: `custom:${filter.id}`,
       query: filter.query,
       queryVariants: buildCustomQueryVariants(filter.query),
       customFilterId: filter.id,
       url: filter.url,
       label: filter.url || filter.query,
-    }))
+    })
   }
 
+  if (entries.length) return entries
+
+  const parseScope = normalizeParseScope(session?.parseScope)
   return [{
     filterMode: FILTER_MODE_SCOPE,
-    filterKey: `scope:${PARSE_SCOPE_ALL}`,
-    query: buildScopeListQuery(PARSE_SCOPE_ALL),
-    parseScope: PARSE_SCOPE_ALL,
-    label: 'Все машины',
+    filterKey: `scope:${parseScope}`,
+    query: buildScopeListQuery(parseScope),
+    parseScope,
+    label: getScopeLabel(parseScope),
   }]
 }
 
