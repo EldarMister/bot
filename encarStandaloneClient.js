@@ -25,7 +25,7 @@ const DEFAULT_MAX_PAGES = 25
 const DEFAULT_STALE_PAGE_LIMIT = 4
 const FRESH_RULES = Object.freeze({
   maxViewCount: 6,
-  maxCallCount: 0,
+  maxCallCount: 3,
   maxSubscribeCount: 3,
 })
 
