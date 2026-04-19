@@ -251,10 +251,13 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
     }
   }
 
+  const hasFilters = getSessionBrandSelections(session).length > 0 || getSessionCustomFilters(session).length > 0
+  const filtersButtonLabel = hasFilters ? `✅ ${BUTTON_FILTERS}` : BUTTON_FILTERS
+
   return {
     keyboard: [
       [{ text: toggleButtonLabel }],
-      [{ text: BUTTON_STATUS }, { text: BUTTON_FILTERS }],
+      [{ text: BUTTON_STATUS }, { text: filtersButtonLabel }],
       ...buildButtonRows(getDeleteFilterButtons(session), 3),
     ],
     resize_keyboard: true,
@@ -654,10 +657,7 @@ export async function startStandaloneTelegramFreshBot() {
       wakeParserLoop()
       await respondWithControl(
         message,
-        [
-          '⏹️ Парсинг остановлен.',
-          `🎯 Фильтр сохранён: ${formatCurrentFilterLabel(session)}.`,
-        ].join('\n'),
+        ['⏹️ Парсинг остановлен. Фильтры сохранены.', '', buildStatusText(session)].join('\n'),
         session,
         KEYBOARD_SECTION_MAIN,
       )
@@ -695,7 +695,7 @@ export async function startStandaloneTelegramFreshBot() {
       return
     }
 
-    if (text === BUTTON_FILTERS) {
+    if (text === BUTTON_FILTERS || text === `✅ ${BUTTON_FILTERS}`) {
       const session = stateStore.upsertSession(chatId, {
         ...commonUserFields,
         currentSection: KEYBOARD_SECTION_FILTERS,
