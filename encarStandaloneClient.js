@@ -29,7 +29,7 @@ import {
 const LIST_PAGE_SIZE = 20
 const MIN_YEAR = 2019
 const DEFAULT_MAX_PAGES = 25
-const DEFAULT_STALE_PAGE_LIMIT = 4
+const DEFAULT_STALE_PAGE_LIMIT = 2 // stop faster when pages are all-seen
 const FRESH_RULES = Object.freeze({
   maxViewCount: 6,
   maxCallCount: 3,
@@ -41,9 +41,23 @@ const DEFAULT_GROUP_CONCURRENCY = 3
 const DEFAULT_DETAIL_CONCURRENCY = 4
 const DEFAULT_DETAIL_CONCURRENCY_MAX = 6
 const DEFAULT_DETAIL_CONCURRENCY_MIN = 2
+const NIGHT_DETAIL_CONCURRENCY_MAX = 8   // night: allow higher concurrency
 const ADAPTIVE_DETAIL_PENALTY_MS = 10 * 60 * 1000
 const ADAPTIVE_DETAIL_RECOVERY_STREAK = 3
 const STALE_FILTER_ALERT_MS = 6 * 60 * 60 * 1000 // 6 hours
+
+
+// Adaptive per-filter scan intervals
+const FILTER_INTERVAL_FRESH_MS      = 45  * 1000        // found fresh just now → rescan in 45s
+const FILTER_INTERVAL_RECENT_MS     = 90  * 1000        // last fresh < 30 min ago → 90s
+const FILTER_INTERVAL_QUIET_MS      = 5   * 60 * 1000   // last fresh 30–120 min ago → 5 min
+const FILTER_INTERVAL_IDLE_MS       = 10  * 60 * 1000   // last fresh > 2 hours → 10 min
+
+// Jitter ranges (day vs night KST)
+const JITTER_DAY_MIN_MS   = 100
+const JITTER_DAY_MAX_MS   = 400
+const JITTER_NIGHT_MIN_MS = 30
+const JITTER_NIGHT_MAX_MS = 100
 
 const JAPANESE_BRAND_ALIASES = [
   'toyota',
@@ -75,31 +89,27 @@ const GERMAN_BRAND_ALIASES = [
   'opel',
 ]
 
-const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-  'Mozilla/5.0 (Linux; Android 13; Samsung Galaxy S23) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-  'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+// Browser profiles — each profile is a complete, internally consistent set of request headers.
+// Profiles include sec-ch-ua (Chromium-based only) to look like real browsers.
+const BROWSER_PROFILES = [
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7' },
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', 'sec-ch-ua': '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7' },
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36', 'sec-ch-ua': '"Chromium";v="122", "Google Chrome";v="122", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8' },
+  { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"macOS"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8' },
+  { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', 'sec-ch-ua': '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"macOS"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8' },
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0', 'sec-ch-ua': '"Microsoft Edge";v="124", "Chromium";v="124", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8' },
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0', 'sec-ch-ua': '"Microsoft Edge";v="123", "Chromium";v="123", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5' },
+  { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Linux"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8' },
+  { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36', 'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"', 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8' },
+  { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36', 'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"', 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"', 'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8' },
+  // Firefox profiles — no sec-ch-ua
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0', 'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3' },
+  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0', 'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3' },
+  { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0', 'Accept-Language': 'ko-KR,ko;q=0.8,en;q=0.5' },
+  // Safari profiles — no sec-ch-ua
+  { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15', 'Accept-Language': 'ko-KR,ko;q=0.9' },
+  { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1', 'Accept-Language': 'ko-KR,ko;q=0.9' },
 ]
-
-const JITTER_MIN_MS = 100
-const JITTER_MAX_MS = 400
 
 const KOREAN_VEHICLE_BRAND_RE = /\b(kia|gia|hyundai|hyeondae|genesis|jenesiseu|daewoo|renault(?:\s+korea|\s+samsung)|renault samsung|reunokoria|samsung|samseong|ssangyong|kg\s*mobility|kgmobilriti)\b/i
 const KOREAN_VEHICLE_BRAND_HANGUL_RE = /\uAE30\uC544|\uD604\uB300|\uC81C\uB124\uC2DC\uC2A4|\uB300\uC6B0|\uB974\uB178\uCF54\uB9AC\uC544|\uC0BC\uC131|\uC30D\uC6A9|\uBAA8\uBE4C\uB9AC\uD2F0/u
@@ -428,12 +438,35 @@ function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
-function nextUA() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+// Returns true if current time is between 22:00 and 08:00 KST (UTC+9)
+function isNightKST() {
+  const kstHour = (new Date().getUTCHours() + 9) % 24
+  return kstHour >= 22 || kstHour < 8
 }
 
-function jitterDelay(minMs = JITTER_MIN_MS, maxMs = JITTER_MAX_MS) {
-  const ms = minMs + Math.floor(Math.random() * (maxMs - minMs + 1))
+// Pick a random browser profile and build a full header set for one request
+function nextProfile() {
+  const p = BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)]
+  const headers = {
+    'User-Agent': p['User-Agent'],
+    'Accept-Language': p['Accept-Language'] || 'ko-KR,ko;q=0.9,en-US;q=0.8',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
+  }
+  if (p['sec-ch-ua']) {
+    headers['sec-ch-ua'] = p['sec-ch-ua']
+    headers['sec-ch-ua-mobile'] = p['sec-ch-ua-mobile'] || '?0'
+    headers['sec-ch-ua-platform'] = p['sec-ch-ua-platform'] || '"Windows"'
+  }
+  return headers
+}
+
+function jitterDelay(minMs, maxMs) {
+  const night = isNightKST()
+  const lo = minMs ?? (night ? JITTER_NIGHT_MIN_MS : JITTER_DAY_MIN_MS)
+  const hi = maxMs ?? (night ? JITTER_NIGHT_MAX_MS : JITTER_DAY_MAX_MS)
+  const ms = lo + Math.floor(Math.random() * (hi - lo + 1))
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
@@ -966,11 +999,10 @@ function createApiClient(timeoutMs) {
     decompress: true,
     headers: {
       Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
       Origin: 'https://www.encar.com',
       Referer: 'https://www.encar.com/',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      // Per-request profile headers (UA, Accept-Language, sec-ch-ua etc) are added per call
     },
   })
 }
@@ -1201,15 +1233,18 @@ export function createStandaloneEncarClient(env = {}) {
   function notifyAdaptiveScanEnd(onLog = () => {}) {
     if (adaptiveDetail.recent429InScan === 0) {
       adaptiveDetail.cleanStreak += 1
+      // At night allow higher concurrency ceiling
+      const nightCap = isNightKST() ? NIGHT_DETAIL_CONCURRENCY_MAX : detailConcurrencyMax
+      const cap = Math.max(detailConcurrencyMax, nightCap)
       if (
         Date.now() >= adaptiveDetail.penaltyUntilMs
         && adaptiveDetail.cleanStreak >= ADAPTIVE_DETAIL_RECOVERY_STREAK
-        && adaptiveDetail.concurrency < detailConcurrencyMax
+        && adaptiveDetail.concurrency < cap
       ) {
         const previous = adaptiveDetail.concurrency
-        adaptiveDetail.concurrency = Math.min(detailConcurrencyMax, adaptiveDetail.concurrency + 1)
+        adaptiveDetail.concurrency = Math.min(cap, adaptiveDetail.concurrency + 1)
         adaptiveDetail.cleanStreak = 0
-        onLog(`ADAPTIVE_RELAX | concurrency ${previous} -> ${adaptiveDetail.concurrency}`)
+        onLog(`ADAPTIVE_RELAX | concurrency ${previous} -> ${adaptiveDetail.concurrency}${isNightKST() ? ' [night]' : ''}`)
       }
     } else {
       adaptiveDetail.cleanStreak = 0
@@ -1225,9 +1260,7 @@ export function createStandaloneEncarClient(env = {}) {
         q: cleanText(query),
         sr: `|ModifiedDate|${offset}|${LIST_PAGE_SIZE}`,
       },
-      headers: {
-        'User-Agent': nextUA(),
-      },
+      headers: nextProfile(),
     })
 
     return {
@@ -1273,9 +1306,7 @@ export function createStandaloneEncarClient(env = {}) {
       },
       {
         timeout: readPositiveInteger(env.ENCAR_REQUEST_TIMEOUT_MS, 25000),
-        headers: {
-          'User-Agent': nextUA(),
-        },
+        headers: nextProfile(),
       },
       env,
     )
@@ -1442,9 +1473,7 @@ export function createStandaloneEncarClient(env = {}) {
   async function fetchVehicleDetailDirect(encarId, fallbackRaw = {}) {
     await jitterDelay()
     const response = await apiClient.get(`/v1/readside/vehicle/${encodeURIComponent(encarId)}`, {
-      headers: {
-        'User-Agent': nextUA(),
-      },
+      headers: nextProfile(),
     })
     return buildVehicleDetailResult(encarId, response?.data || {}, fallbackRaw, 'direct')
   }
@@ -1458,9 +1487,7 @@ export function createStandaloneEncarClient(env = {}) {
       },
       {
         timeout: readPositiveInteger(env.ENCAR_REQUEST_TIMEOUT_MS, 25000),
-        headers: {
-          'User-Agent': nextUA(),
-        },
+        headers: nextProfile(),
       },
       env,
     )
@@ -1803,10 +1830,12 @@ export function createStandaloneEncarClient(env = {}) {
         }
       })
 
-      // Smarter stale-page tracking (unchanged logic, but now based on the new candidates list)
+      // Smart stale-page tracking: stop as soon as we hit all-seen pages
       if (candidates.length === 0) {
+        // First page all-seen → stop immediately (no point going deeper, sorted by date)
+        if (groupPagesProcessed === 1) break
         knownOnlyPages += 1
-        if (knownOnlyPages >= 2) break
+        if (knownOnlyPages >= 1) break
       } else {
         knownOnlyPages = 0
         if (pageFreshHits === 0) stalePages += 1
@@ -1821,18 +1850,39 @@ export function createStandaloneEncarClient(env = {}) {
     return stats
   }
 
+  // Per-filter next-scan scheduling — avoids re-scanning quiet filters too often
+  const filterNextScanMs = new Map()
+
+  function computeFilterNextScanDelay(filterKey, freshFound, stateStore) {
+    const persistedStats = stateStore.getFilterStats?.(filterKey)
+    const lastFreshAtMs = persistedStats?.lastFreshAt ? Date.parse(persistedStats.lastFreshAt) : 0
+    const timeSinceFresh = lastFreshAtMs > 0 ? Date.now() - lastFreshAtMs : Infinity
+
+    if (freshFound) return FILTER_INTERVAL_FRESH_MS
+    if (timeSinceFresh < 30 * 60 * 1000) return FILTER_INTERVAL_RECENT_MS
+    if (timeSinceFresh < 2 * 3600 * 1000) return FILTER_INTERVAL_QUIET_MS
+    return FILTER_INTERVAL_IDLE_MS
+  }
+
   async function scanFreshListings({
     getActiveSessions,
     stateStore,
     onFreshListing,
     onLog = () => {},
   } = {}) {
-    const initialGroups = buildFilterGroups(getActiveSessions())
-    if (!initialGroups.length) {
+    const allGroups = buildFilterGroups(getActiveSessions())
+    if (!allGroups.length) {
       return { pagesProcessed: 0, newFreshCount: 0, perFilterStats: [] }
     }
 
-    const perFilterStats = await runWithConcurrency(initialGroups, Math.min(groupConcurrency, initialGroups.length), (group) => {
+    // Only scan filters that are due (adaptive interval scheduling)
+    const now = Date.now()
+    const dueGroups = allGroups.filter((g) => (filterNextScanMs.get(g.filterKey) || 0) <= now)
+    if (!dueGroups.length) {
+      return { pagesProcessed: 0, newFreshCount: 0, perFilterStats: [] }
+    }
+
+    const perFilterStats = await runWithConcurrency(dueGroups, Math.min(groupConcurrency, dueGroups.length), (group) => {
       return processFilterGroup(group, { getActiveSessions, stateStore, onFreshListing, onLog })
     })
 
@@ -1859,6 +1909,10 @@ export function createStandaloneEncarClient(env = {}) {
         onLog(`STATS_PERSIST_FAILED | filter=${stats.filterKey} | ${cleanText(error?.message) || 'unknown error'}`)
       }
 
+      // Set next scan time for this filter
+      const delay = computeFilterNextScanDelay(stats.filterKey, stats.freshHits > 0, stateStore)
+      filterNextScanMs.set(stats.filterKey, Date.now() + delay)
+
       // Stale-filter alert
       const persistedStats = stateStore.getFilterStats?.(stats.filterKey)
       const lastFreshAtMs = persistedStats?.lastFreshAt ? Date.parse(persistedStats.lastFreshAt) : 0
@@ -1870,7 +1924,7 @@ export function createStandaloneEncarClient(env = {}) {
         onLog(`FILTER_STALE_ALERT | filter=${stats.filterKey} | label="${stats.label}" | last_fresh_age_h=${Math.round((Date.now() - lastFreshAtMs) / 3600000)}`)
       }
 
-      onLog(`FILTER_SCAN | key=${stats.filterKey} | pages=${stats.pagesProcessed} | checked=${stats.listingsChecked} | filtered=${stats.filtered} | fresh=${stats.freshHits} | vin_dupes=${stats.vinDupes} | net_err=${stats.networkErrors}`)
+      onLog(`FILTER_SCAN | key=${stats.filterKey} | pages=${stats.pagesProcessed} | checked=${stats.listingsChecked} | filtered=${stats.filtered} | fresh=${stats.freshHits} | vin_dupes=${stats.vinDupes} | net_err=${stats.networkErrors} | next_in=${Math.round(delay / 1000)}s`)
     }
 
     // Adjust detail concurrency based on this scan's 429 rate

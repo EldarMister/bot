@@ -5,7 +5,8 @@ const PROXY_GENERIC_FAILURE_COOLDOWN_MS = 30 * 60 * 1000
 const DIRECT_BLOCK_COOLDOWN_MS = 15 * 60 * 1000
 const DIRECT_CONSECUTIVE_FAIL_THRESHOLD = 3
 
-let proxySuppressedUntil = 0
+// Per-proxy URL suppression (supports multiple proxies)
+const proxyUrlSuppressedUntil = new Map()
 let directSuppressedUntil = 0
 let directConsecutiveFailures = 0
 
@@ -40,32 +41,77 @@ function extractProxyMeta(error) {
   }
 }
 
+// Parse all configured proxy URLs (ENCAR_PROXY_URLS comma-separated + ENCAR_PROXY_URL single)
+export function getEncarProxyUrls(env = globalThis.process?.env) {
+  const urls = new Set()
+  const single = cleanText(env?.ENCAR_PROXY_URL || '').replace(/\/$/, '')
+  if (single) urls.add(single)
+  const multi = cleanText(env?.ENCAR_PROXY_URLS || '')
+  if (multi) {
+    for (const part of multi.split(',')) {
+      const url = cleanText(part).replace(/\/$/, '')
+      if (url) urls.add(url)
+    }
+  }
+  return [...urls]
+}
+
+// Backward-compat: returns first configured proxy URL
 export function getEncarProxyUrl(env = globalThis.process?.env) {
-  return cleanText(env?.ENCAR_PROXY_URL || '').replace(/\/$/, '')
+  return getEncarProxyUrls(env)[0] || ''
 }
 
 export function hasEncarProxy(env = globalThis.process?.env) {
-  return Boolean(getEncarProxyUrl(env))
+  return getEncarProxyUrls(env).length > 0
 }
 
-export function isEncarProxySuppressed(env = globalThis.process?.env) {
-  return hasEncarProxy(env) && proxySuppressedUntil > Date.now()
+// Per-URL suppression
+function isProxyUrlSuppressed(url) {
+  const until = proxyUrlSuppressedUntil.get(url) || 0
+  return until > Date.now()
 }
 
-export function getEncarProxySuppressedUntil() {
-  return proxySuppressedUntil > Date.now() ? new Date(proxySuppressedUntil).toISOString() : ''
-}
-
-export function suppressEncarProxy(status = 0) {
+function suppressProxyUrl(url, status = 0) {
+  if (!url) return
   const durationMs = status === 401 || status === 403 || status === 404 || status === 407
     ? PROXY_AUTH_FAILURE_COOLDOWN_MS
     : PROXY_GENERIC_FAILURE_COOLDOWN_MS
+  const current = proxyUrlSuppressedUntil.get(url) || 0
+  proxyUrlSuppressedUntil.set(url, Math.max(current, Date.now() + durationMs))
+}
 
-  proxySuppressedUntil = Math.max(proxySuppressedUntil, Date.now() + durationMs)
+// Pick a random non-suppressed proxy URL; null if all suppressed or none configured
+export function getActiveProxyUrl(env = globalThis.process?.env) {
+  const urls = getEncarProxyUrls(env)
+  const available = urls.filter((url) => !isProxyUrlSuppressed(url))
+  if (!available.length) return null
+  return available[Math.floor(Math.random() * available.length)]
+}
+
+// All proxy URLs are suppressed (or none configured)
+export function isEncarProxySuppressed(env = globalThis.process?.env) {
+  const urls = getEncarProxyUrls(env)
+  if (!urls.length) return false
+  return urls.every((url) => isProxyUrlSuppressed(url))
+}
+
+export function getEncarProxySuppressedUntil() {
+  // Return earliest expiry among all suppressed URLs for display
+  const now = Date.now()
+  let earliest = 0
+  for (const [, until] of proxyUrlSuppressedUntil) {
+    if (until > now && (earliest === 0 || until < earliest)) earliest = until
+  }
+  return earliest > now ? new Date(earliest).toISOString() : ''
+}
+
+// Suppress all proxy URLs (legacy API kept for compat)
+export function suppressEncarProxy(status = 0) {
+  const urls = getEncarProxyUrls()
+  for (const url of urls) suppressProxyUrl(url, status)
 }
 
 export function isEncarDirectSuppressed(env = globalThis.process?.env) {
-  // Only suppress direct if we actually have a proxy to fall back to
   return hasEncarProxy(env) && directSuppressedUntil > Date.now()
 }
 
@@ -74,7 +120,6 @@ export function getEncarDirectSuppressedUntil() {
 }
 
 export function recordEncarDirectFailure(status = 0, env = globalThis.process?.env) {
-  // Only apply block-cooldown when a proxy alternative exists
   if (!hasEncarProxy(env)) {
     directConsecutiveFailures = 0
     directSuppressedUntil = 0
@@ -183,22 +228,34 @@ export function decorateEncarSourceError(error, channel = 'list', env = globalTh
   return error
 }
 
+// Fetch via a randomly selected non-suppressed proxy.
+// On failure the used proxy URL is individually suppressed.
 export async function fetchViaEncarProxy(params = {}, requestConfig = {}, env = globalThis.process?.env) {
-  const proxyUrl = getEncarProxyUrl(env)
+  const proxyUrl = getActiveProxyUrl(env)
   if (!proxyUrl) {
-    throw new Error('ENCAR_PROXY_URL is not configured')
+    const configured = getEncarProxyUrls(env)
+    throw new Error(
+      configured.length
+        ? 'All configured Encar proxies are currently suppressed'
+        : 'ENCAR_PROXY_URL / ENCAR_PROXY_URLS is not configured',
+    )
   }
 
-  const response = await axios.get(proxyUrl, {
-    timeout: 25000,
-    proxy: false,
-    params,
-    headers: {
-      Accept: 'application/json, text/plain, */*',
-      ...requestConfig.headers,
-    },
-    ...requestConfig,
-  })
-
-  return response.data
+  try {
+    const response = await axios.get(proxyUrl, {
+      timeout: 25000,
+      proxy: false,
+      params,
+      headers: {
+        Accept: 'application/json, text/plain, */*',
+        ...requestConfig.headers,
+      },
+      ...requestConfig,
+    })
+    return response.data
+  } catch (error) {
+    const status = Number(error?.response?.status) || 0
+    suppressProxyUrl(proxyUrl, status)
+    throw error
+  }
 }
