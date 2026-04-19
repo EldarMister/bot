@@ -15,6 +15,7 @@ import {
   FILTER_MODE_CUSTOM,
   getSessionFilterEntries,
   matchesBrandPreset,
+  matchesCustomQuery,
   normalizeFilterMode,
   normalizeParseScope,
 } from './encarFilters.js'
@@ -831,7 +832,9 @@ function matchesSessionFilter(listing, filterEntry = {}) {
     return matchesBrandPreset(listing, filterEntry?.brandKey)
   }
   if (filterMode === FILTER_MODE_CUSTOM) {
-    return true
+    const query = cleanText(filterEntry?.query)
+    if (!query) return true
+    return matchesCustomQuery(listing, query)
   }
 
   const normalizedScope = normalizeParseScope(filterEntry?.parseScope)
@@ -1299,9 +1302,13 @@ export function createStandaloneEncarClient(env = {}) {
             manufacturer: resolveManufacturerDisplayName(raw?.Manufacturer, raw?.Model, raw?.Name),
             name: normalizeText(raw?.Name),
             model: normalizeText(raw?.Model || raw?.Badge),
+            year: rawYear,
           }
 
-          if (!matchesSessionFilter(rawListing, currentGroup)) continue
+          if (!matchesSessionFilter(rawListing, currentGroup)) {
+            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+            continue
+          }
 
           // Pre-screen with list-level manage counts to avoid unnecessary detail API calls.
           // Encar list results typically include ManageCnt with viewCount/callCount.

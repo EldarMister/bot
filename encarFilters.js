@@ -782,6 +782,91 @@ export function getSessionFilterEntries(session = {}) {
   }]
 }
 
+const MANUFACTURER_SIGNAL_MAP = (() => {
+  const map = new Map()
+  for (const preset of BRAND_PRESETS) {
+    const signals = Array.isArray(preset.signals) ? preset.signals : []
+    const keys = new Set()
+    for (const token of preset.manufacturerTokens || []) {
+      keys.add(token)
+      keys.add(normalizeSignal(token))
+    }
+    for (const signal of signals) {
+      keys.add(signal)
+      keys.add(normalizeSignal(signal))
+    }
+    for (const key of keys) {
+      if (key) map.set(key, signals)
+    }
+  }
+  return map
+})()
+
+function extractManufacturerTokensFromQuery(query = '') {
+  const tokens = []
+  const seen = new Set()
+  const re = /Manufacturer\.([^._)]+)/g
+  let match
+  while ((match = re.exec(String(query || ''))) !== null) {
+    const token = cleanText(match[1])
+    if (!token || seen.has(token)) continue
+    seen.add(token)
+    tokens.push(token)
+  }
+  return tokens
+}
+
+function extractYearRangeFromQuery(query = '') {
+  const match = String(query || '').match(/Year\.range\(([^)]*)\)/i)
+  if (!match) return null
+  const [startRaw, endRaw] = match[1].split('..').map((value) => cleanText(value))
+  const start = startRaw ? Number.parseInt(startRaw, 10) : null
+  const end = endRaw ? Number.parseInt(endRaw, 10) : null
+  return {
+    startYear: Number.isFinite(start) && start > 0 ? Math.floor(start / 100) : null,
+    endYear: Number.isFinite(end) && end > 0 ? Math.floor(end / 100) : null,
+  }
+}
+
+export function matchesCustomQuery(listing = {}, query = '') {
+  const normalizedQuery = cleanText(query)
+  if (!normalizedQuery) return true
+
+  // Manufacturer constraint
+  const tokens = extractManufacturerTokensFromQuery(normalizedQuery)
+  if (tokens.length > 0) {
+    const haystack = [listing?.manufacturer, listing?.name, listing?.model]
+      .map((value) => normalizeSignal(value))
+      .filter(Boolean)
+
+    const anyMatch = tokens.some((token) => {
+      const signals = MANUFACTURER_SIGNAL_MAP.get(token)
+        || MANUFACTURER_SIGNAL_MAP.get(normalizeSignal(token))
+        || [token]
+
+      return signals.some((signal) => {
+        const normalizedSignal = normalizeSignal(signal)
+        if (!normalizedSignal) return false
+        return haystack.some((value) => value.includes(normalizedSignal) || normalizedSignal.includes(value))
+      })
+    })
+
+    if (!anyMatch) return false
+  }
+
+  // Year range constraint
+  const yearRange = extractYearRangeFromQuery(normalizedQuery)
+  if (yearRange && (yearRange.startYear || yearRange.endYear)) {
+    const listingYearRaw = Number.parseInt(String(listing?.year || ''), 10)
+    if (Number.isFinite(listingYearRaw) && listingYearRaw > 0) {
+      if (yearRange.startYear && listingYearRaw < yearRange.startYear) return false
+      if (yearRange.endYear && listingYearRaw > yearRange.endYear) return false
+    }
+  }
+
+  return true
+}
+
 export function matchesBrandPreset(listing = {}, brandKey = '') {
   const preset = getBrandPreset(brandKey)
   if (!preset) return false
