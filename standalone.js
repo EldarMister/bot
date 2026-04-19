@@ -23,6 +23,8 @@ import {
 } from './encarFilters.js'
 import { LocalStateStore } from './stateStore.js'
 import { createStandaloneEncarClient } from './encarStandaloneClient.js'
+import { RingLogBuffer } from './logBuffer.js'
+import { startAdminServer } from './adminServer.js'
 
 dotenv.config()
 
@@ -480,6 +482,22 @@ export async function startStandaloneTelegramFreshBot() {
 
   const stateStore = new LocalStateStore(stateFile)
   await stateStore.load()
+
+  // Ensure globalStats.startedAt is set once
+  const gs = stateStore.getGlobalStats()
+  if (!cleanText(gs.startedAt)) {
+    stateStore.incrementGlobalStats({}) // initializes startedAt
+    await stateStore.flush()
+  }
+
+  const logBuffer = new RingLogBuffer(1200)
+  // Pipe console output to the ring buffer
+  const origConsoleLog = console.log.bind(console)
+  const origConsoleWarn = console.warn.bind(console)
+  const origConsoleError = console.error.bind(console)
+  console.log = (...args) => { logBuffer.info(args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')); origConsoleLog(...args) }
+  console.warn = (...args) => { logBuffer.warn(args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')); origConsoleWarn(...args) }
+  console.error = (...args) => { logBuffer.error(args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')); origConsoleError(...args) }
 
   const encarClient = createStandaloneEncarClient(env)
 
@@ -1134,6 +1152,16 @@ export async function startStandaloneTelegramFreshBot() {
 
               try {
                 await sendListingMessage(chatId, listing)
+                stateStore.recordDelivered(chatId, {
+                  encarId: listing?.encarId,
+                  title: cleanText(listing?.name),
+                  priceKrw: listing?.priceKrw,
+                  year: Number(listing?.year) || 0,
+                  mileage: Number(listing?.mileage) || 0,
+                  filterLabel: cleanText(listing?.filterLabel),
+                  filterKey: cleanText(listing?.filterKey),
+                  link: cleanText(listing?.encarUrl),
+                })
               } catch (error) {
                 console.warn(`TELEGRAM_DELIVERY_FAILED | chat_id=${chatId} | encar_id=${listing?.encarId || '-'} | ${cleanText(error?.message) || 'unknown error'}`)
                 if (shouldDeactivateChat(error)) {
@@ -1144,6 +1172,11 @@ export async function startStandaloneTelegramFreshBot() {
           },
         })
 
+        stateStore.incrementGlobalStats({
+          totalScans: 1,
+          totalPages: Number(result?.pagesProcessed) || 0,
+          totalListingsChecked: Number(result?.listingsChecked) || 0,
+        })
         await stateStore.flush()
         if (result?.newFreshCount) {
           console.log(`STANDALONE_FRESH_SCAN_DONE | pages=${result.pagesProcessed} | new=${result.newFreshCount}`)
@@ -1154,6 +1187,38 @@ export async function startStandaloneTelegramFreshBot() {
 
       await waitForWakeOrTimeout(activeDelayMs)
     }
+  }
+
+  // Admin server (web panel)
+  try {
+    await startAdminServer({
+      stateStore,
+      logBuffer,
+      env,
+      actions: {
+        wakeParser: wakeParserLoop,
+        broadcast: async (text) => {
+          const sessions = stateStore.getAllSessions().filter((s) => s.isActive)
+          let sent = 0
+          let failed = 0
+          for (const s of sessions) {
+            try {
+              await sendTelegramMessage(s.chatId, text)
+              sent += 1
+            } catch (error) {
+              failed += 1
+              if (shouldDeactivateChat(error)) {
+                stateStore.deactivateSession(s.chatId)
+              }
+            }
+          }
+          await stateStore.flush()
+          return { sent, failed }
+        },
+      },
+    })
+  } catch (error) {
+    console.warn(`ADMIN_SERVER_START_FAILED | ${cleanText(error?.message) || 'unknown'}`)
   }
 
   const loops = [pollTelegramLoop(), parserLoop()]

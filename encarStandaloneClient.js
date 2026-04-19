@@ -1857,10 +1857,13 @@ export function createStandaloneEncarClient(env = {}) {
     // Adjust detail concurrency based on this scan's 429 rate
     notifyAdaptiveScanEnd(onLog)
 
+    const listingsChecked = perFilterStats.reduce((sum, s) => sum + (Number(s?.listingsChecked) || 0), 0)
+
     return {
       pagesProcessed,
       newFreshCount,
       perFilterStats,
+      listingsChecked,
       detailConcurrency: adaptiveDetail.concurrency,
     }
   }

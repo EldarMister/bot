@@ -17,6 +17,14 @@ const DEFAULT_STATE = Object.freeze({
   seenListings: {},
   seenVins: {},
   filterStats: {},
+  deliveredListings: {},
+  globalStats: {
+    totalDelivered: 0,
+    totalScans: 0,
+    totalPages: 0,
+    totalListingsChecked: 0,
+    startedAt: '',
+  },
 })
 
 const SEEN_LISTING_TTL_MS = 14 * 24 * 60 * 60 * 1000
@@ -24,6 +32,7 @@ const MAX_SEEN_LISTINGS = 8000
 const SEEN_VIN_TTL_MS = 14 * 24 * 60 * 60 * 1000
 const MAX_SEEN_VINS = 6000
 const MAX_FILTER_STATS = 200
+const MAX_DELIVERED_PER_USER = 50
 
 function cloneDefaultState() {
   return {
@@ -32,6 +41,14 @@ function cloneDefaultState() {
     seenListings: {},
     seenVins: {},
     filterStats: {},
+    deliveredListings: {},
+    globalStats: {
+      totalDelivered: 0,
+      totalScans: 0,
+      totalPages: 0,
+      totalListingsChecked: 0,
+      startedAt: '',
+    },
   }
 }
 
@@ -153,6 +170,37 @@ function normalizeState(rawState) {
         encarId: cleanText(entry?.encarId),
         notifiedAt: cleanText(entry?.notifiedAt) || new Date().toISOString(),
       }
+    }
+  }
+
+  if (rawState.deliveredListings && typeof rawState.deliveredListings === 'object' && !Array.isArray(rawState.deliveredListings)) {
+    for (const [chatId, list] of Object.entries(rawState.deliveredListings)) {
+      const normalizedChatId = normalizeChatId(chatId)
+      if (!normalizedChatId || !Array.isArray(list)) continue
+      state.deliveredListings[normalizedChatId] = list
+        .filter((it) => it && typeof it === 'object')
+        .map((it) => ({
+          encarId: cleanText(it?.encarId),
+          title: cleanText(it?.title),
+          priceKrw: Math.max(0, Number(it?.priceKrw) || 0),
+          year: Math.max(0, Number(it?.year) || 0),
+          mileage: Math.max(0, Number(it?.mileage) || 0),
+          filterLabel: cleanText(it?.filterLabel),
+          filterKey: cleanText(it?.filterKey),
+          deliveredAt: cleanText(it?.deliveredAt) || new Date().toISOString(),
+          link: cleanText(it?.link),
+        }))
+        .slice(-MAX_DELIVERED_PER_USER)
+    }
+  }
+
+  if (rawState.globalStats && typeof rawState.globalStats === 'object' && !Array.isArray(rawState.globalStats)) {
+    state.globalStats = {
+      totalDelivered: Math.max(0, Number(rawState.globalStats?.totalDelivered) || 0),
+      totalScans: Math.max(0, Number(rawState.globalStats?.totalScans) || 0),
+      totalPages: Math.max(0, Number(rawState.globalStats?.totalPages) || 0),
+      totalListingsChecked: Math.max(0, Number(rawState.globalStats?.totalListingsChecked) || 0),
+      startedAt: cleanText(rawState.globalStats?.startedAt),
     }
   }
 
@@ -488,5 +536,75 @@ export class LocalStateStore {
     })
 
     this.state.filterStats = Object.fromEntries(entries.slice(0, MAX_FILTER_STATS))
+  }
+
+  getAllSessions() {
+    return Object.values(this.state.sessions).map((session) => cloneSession(session))
+  }
+
+  recordDelivered(chatId, payload = {}) {
+    const normalizedChatId = normalizeChatId(chatId)
+    if (!normalizedChatId) return null
+
+    const nowIso = new Date().toISOString()
+    const entry = {
+      encarId: cleanText(payload?.encarId),
+      title: cleanText(payload?.title),
+      priceKrw: Math.max(0, Number(payload?.priceKrw) || 0),
+      year: Math.max(0, Number(payload?.year) || 0),
+      mileage: Math.max(0, Number(payload?.mileage) || 0),
+      filterLabel: cleanText(payload?.filterLabel),
+      filterKey: cleanText(payload?.filterKey),
+      deliveredAt: nowIso,
+      link: cleanText(payload?.link),
+    }
+
+    const list = Array.isArray(this.state.deliveredListings[normalizedChatId])
+      ? this.state.deliveredListings[normalizedChatId]
+      : []
+    list.push(entry)
+    if (list.length > MAX_DELIVERED_PER_USER) {
+      list.splice(0, list.length - MAX_DELIVERED_PER_USER)
+    }
+    this.state.deliveredListings[normalizedChatId] = list
+
+    this.state.globalStats = {
+      ...this.state.globalStats,
+      totalDelivered: (Number(this.state.globalStats?.totalDelivered) || 0) + 1,
+    }
+    return entry
+  }
+
+  getDeliveredForChat(chatId) {
+    const normalizedChatId = normalizeChatId(chatId)
+    if (!normalizedChatId) return []
+    const list = this.state.deliveredListings[normalizedChatId]
+    return Array.isArray(list) ? list.slice().reverse() : []
+  }
+
+  getGlobalStats() {
+    return { ...(this.state.globalStats || {}) }
+  }
+
+  incrementGlobalStats(increments = {}) {
+    const current = this.state.globalStats || {}
+    this.state.globalStats = {
+      totalDelivered: Math.max(0, Number(current.totalDelivered) || 0) + (Number(increments.totalDelivered) || 0),
+      totalScans: Math.max(0, Number(current.totalScans) || 0) + (Number(increments.totalScans) || 0),
+      totalPages: Math.max(0, Number(current.totalPages) || 0) + (Number(increments.totalPages) || 0),
+      totalListingsChecked: Math.max(0, Number(current.totalListingsChecked) || 0) + (Number(increments.totalListingsChecked) || 0),
+      startedAt: cleanText(current.startedAt) || new Date().toISOString(),
+    }
+    return { ...this.state.globalStats }
+  }
+
+  getSeenListingsSummary() {
+    const values = Object.values(this.state.seenListings || {})
+    const notified = values.filter((it) => cleanText(it?.notifiedAt)).length
+    return {
+      total: values.length,
+      notified,
+      vinsTracked: Object.keys(this.state.seenVins || {}).length,
+    }
   }
 }
