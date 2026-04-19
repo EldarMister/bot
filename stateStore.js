@@ -15,16 +15,23 @@ const DEFAULT_STATE = Object.freeze({
   lastUpdateId: 0,
   sessions: {},
   seenListings: {},
+  seenVins: {},
+  filterStats: {},
 })
 
 const SEEN_LISTING_TTL_MS = 14 * 24 * 60 * 60 * 1000
 const MAX_SEEN_LISTINGS = 8000
+const SEEN_VIN_TTL_MS = 14 * 24 * 60 * 60 * 1000
+const MAX_SEEN_VINS = 6000
+const MAX_FILTER_STATS = 200
 
 function cloneDefaultState() {
   return {
     lastUpdateId: DEFAULT_STATE.lastUpdateId,
     sessions: {},
     seenListings: {},
+    seenVins: {},
+    filterStats: {},
   }
 }
 
@@ -133,6 +140,38 @@ function normalizeState(rawState) {
         callCount: Math.max(0, Number(listing?.callCount) || 0),
         subscribeCount: Math.max(0, Number(listing?.subscribeCount) || 0),
         qualifiesFresh: Boolean(listing?.qualifiesFresh),
+      }
+    }
+  }
+
+  if (rawState.seenVins && typeof rawState.seenVins === 'object' && !Array.isArray(rawState.seenVins)) {
+    for (const [vin, entry] of Object.entries(rawState.seenVins)) {
+      const normalizedVin = cleanText(vin).toUpperCase()
+      if (!normalizedVin) continue
+      state.seenVins[normalizedVin] = {
+        vin: normalizedVin,
+        encarId: cleanText(entry?.encarId),
+        notifiedAt: cleanText(entry?.notifiedAt) || new Date().toISOString(),
+      }
+    }
+  }
+
+  if (rawState.filterStats && typeof rawState.filterStats === 'object' && !Array.isArray(rawState.filterStats)) {
+    for (const [filterKey, stats] of Object.entries(rawState.filterStats)) {
+      const key = cleanText(filterKey)
+      if (!key) continue
+      state.filterStats[key] = {
+        filterKey: key,
+        label: cleanText(stats?.label),
+        scans: Math.max(0, Number(stats?.scans) || 0),
+        pagesProcessed: Math.max(0, Number(stats?.pagesProcessed) || 0),
+        listingsChecked: Math.max(0, Number(stats?.listingsChecked) || 0),
+        filtered: Math.max(0, Number(stats?.filtered) || 0),
+        freshHits: Math.max(0, Number(stats?.freshHits) || 0),
+        vinDupes: Math.max(0, Number(stats?.vinDupes) || 0),
+        networkErrors: Math.max(0, Number(stats?.networkErrors) || 0),
+        lastScanAt: cleanText(stats?.lastScanAt),
+        lastFreshAt: cleanText(stats?.lastFreshAt),
       }
     }
   }
@@ -315,5 +354,139 @@ export class LocalStateStore {
     })
 
     this.state.seenListings = Object.fromEntries(filteredEntries.slice(0, MAX_SEEN_LISTINGS))
+  }
+
+  getSeenVin(vin) {
+    const key = cleanText(vin).toUpperCase()
+    if (!key) return null
+    const entry = this.state.seenVins[key]
+    return entry ? { ...entry } : null
+  }
+
+  rememberVin(vin, encarId) {
+    const key = cleanText(vin).toUpperCase()
+    if (!key) return null
+    const entry = {
+      vin: key,
+      encarId: cleanText(encarId),
+      notifiedAt: new Date().toISOString(),
+    }
+    this.state.seenVins[key] = entry
+    this.pruneSeenVins()
+    return { ...entry }
+  }
+
+  pruneSeenVins() {
+    const now = Date.now()
+    const entries = Object.entries(this.state.seenVins).filter(([, entry]) => {
+      const notifiedAtMs = new Date(entry?.notifiedAt || 0).getTime()
+      return Number.isFinite(notifiedAtMs) && now - notifiedAtMs <= SEEN_VIN_TTL_MS
+    })
+
+    entries.sort((left, right) => {
+      const rightMs = new Date(right[1]?.notifiedAt || 0).getTime()
+      const leftMs = new Date(left[1]?.notifiedAt || 0).getTime()
+      return rightMs - leftMs
+    })
+
+    this.state.seenVins = Object.fromEntries(entries.slice(0, MAX_SEEN_VINS))
+  }
+
+  getFilterStats(filterKey) {
+    const key = cleanText(filterKey)
+    if (!key) return null
+    const stats = this.state.filterStats[key]
+    return stats ? { ...stats } : null
+  }
+
+  getAllFilterStats() {
+    return Object.values(this.state.filterStats).map((stats) => ({ ...stats }))
+  }
+
+  updateFilterStats(filterKey, patch = {}) {
+    const key = cleanText(filterKey)
+    if (!key) return null
+
+    const nowIso = new Date().toISOString()
+    const current = this.state.filterStats[key] || {
+      filterKey: key,
+      label: '',
+      scans: 0,
+      pagesProcessed: 0,
+      listingsChecked: 0,
+      filtered: 0,
+      freshHits: 0,
+      vinDupes: 0,
+      networkErrors: 0,
+      lastScanAt: '',
+      lastFreshAt: '',
+    }
+
+    const next = {
+      ...current,
+      ...patch,
+      filterKey: key,
+      label: cleanText(patch?.label ?? current.label),
+      scans: Math.max(0, Number(patch?.scans ?? current.scans) || 0),
+      pagesProcessed: Math.max(0, Number(patch?.pagesProcessed ?? current.pagesProcessed) || 0),
+      listingsChecked: Math.max(0, Number(patch?.listingsChecked ?? current.listingsChecked) || 0),
+      filtered: Math.max(0, Number(patch?.filtered ?? current.filtered) || 0),
+      freshHits: Math.max(0, Number(patch?.freshHits ?? current.freshHits) || 0),
+      vinDupes: Math.max(0, Number(patch?.vinDupes ?? current.vinDupes) || 0),
+      networkErrors: Math.max(0, Number(patch?.networkErrors ?? current.networkErrors) || 0),
+      lastScanAt: cleanText(patch?.lastScanAt ?? current.lastScanAt) || nowIso,
+      lastFreshAt: cleanText(patch?.lastFreshAt ?? current.lastFreshAt),
+    }
+
+    this.state.filterStats[key] = next
+    this.pruneFilterStats()
+    return { ...next }
+  }
+
+  incrementFilterStats(filterKey, label, increments = {}) {
+    const key = cleanText(filterKey)
+    if (!key) return null
+
+    const current = this.state.filterStats[key] || {
+      filterKey: key,
+      label: '',
+      scans: 0,
+      pagesProcessed: 0,
+      listingsChecked: 0,
+      filtered: 0,
+      freshHits: 0,
+      vinDupes: 0,
+      networkErrors: 0,
+      lastScanAt: '',
+      lastFreshAt: '',
+    }
+
+    const patch = {
+      label: label || current.label,
+      scans: current.scans + (Number(increments?.scans) || 0),
+      pagesProcessed: current.pagesProcessed + (Number(increments?.pagesProcessed) || 0),
+      listingsChecked: current.listingsChecked + (Number(increments?.listingsChecked) || 0),
+      filtered: current.filtered + (Number(increments?.filtered) || 0),
+      freshHits: current.freshHits + (Number(increments?.freshHits) || 0),
+      vinDupes: current.vinDupes + (Number(increments?.vinDupes) || 0),
+      networkErrors: current.networkErrors + (Number(increments?.networkErrors) || 0),
+      lastScanAt: increments?.lastScanAt || new Date().toISOString(),
+      lastFreshAt: increments?.lastFreshAt || current.lastFreshAt,
+    }
+
+    return this.updateFilterStats(key, patch)
+  }
+
+  pruneFilterStats() {
+    const entries = Object.entries(this.state.filterStats)
+    if (entries.length <= MAX_FILTER_STATS) return
+
+    entries.sort((left, right) => {
+      const rightMs = new Date(right[1]?.lastScanAt || 0).getTime()
+      const leftMs = new Date(left[1]?.lastScanAt || 0).getTime()
+      return rightMs - leftMs
+    })
+
+    this.state.filterStats = Object.fromEntries(entries.slice(0, MAX_FILTER_STATS))
   }
 }

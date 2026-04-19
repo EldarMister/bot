@@ -1,4 +1,6 @@
 import axios from 'axios'
+import http from 'http'
+import https from 'https'
 import {
   buildEncarSourceDiagnostic,
   decorateEncarSourceError,
@@ -29,6 +31,11 @@ const FRESH_RULES = Object.freeze({
   maxCallCount: 3,
   maxSubscribeCount: 3,
 })
+
+const DEFAULT_MAX_LISTING_AGE_MS = 60 * 60 * 1000 // 60 minutes
+const DEFAULT_GROUP_CONCURRENCY = 3
+const DEFAULT_DETAIL_CONCURRENCY = 4
+const STALE_FILTER_ALERT_MS = 6 * 60 * 60 * 1000 // 6 hours
 
 const JAPANESE_BRAND_ALIASES = [
   'toyota',
@@ -887,6 +894,12 @@ function passesFreshRules(manage) {
     && subscribeCount <= FRESH_RULES.maxSubscribeCount
 }
 
+function passesAgeFreshness(registeredAtMs, maxAgeMs) {
+  if (!maxAgeMs || maxAgeMs <= 0) return true
+  if (!registeredAtMs || registeredAtMs <= 0) return true // unknown age → don't reject
+  return Date.now() - registeredAtMs <= maxAgeMs
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -910,19 +923,183 @@ function getFilterQueryVariants(filterGroup = {}) {
   return variants
 }
 
+const KEEP_ALIVE_HTTP_AGENT = new http.Agent({ keepAlive: true, maxSockets: 32 })
+const KEEP_ALIVE_HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 32 })
+
 function createApiClient(timeoutMs) {
   return axios.create({
     baseURL: 'https://api.encar.com',
     timeout: timeoutMs,
     proxy: false,
+    httpAgent: KEEP_ALIVE_HTTP_AGENT,
+    httpsAgent: KEEP_ALIVE_HTTPS_AGENT,
+    decompress: true,
     headers: {
       Accept: 'application/json, text/plain, */*',
       'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
       Origin: 'https://www.encar.com',
       Referer: 'https://www.encar.com/',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     },
   })
+}
+
+const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
+const RETRYABLE_ERROR_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EAI_AGAIN', 'EPIPE', 'ENOTFOUND',
+])
+
+function isRetryableError(error) {
+  if (!error) return false
+  const status = Number(error?.response?.status)
+  if (RETRYABLE_STATUSES.has(status)) return true
+  if (RETRYABLE_ERROR_CODES.has(error?.code)) return true
+  if (error?.isAxiosError && !error?.response) return true
+  return false
+}
+
+function isNetworkLikeError(error) {
+  if (!error) return false
+  if (error?.response) {
+    const status = Number(error.response.status)
+    // 404 is "legitimate 'not found'", not network; others (429, 5xx) are transient
+    return status >= 500 || status === 429
+  }
+  return true
+}
+
+async function retryWithBackoff(operation, { maxAttempts = 3, baseDelayMs = 500, label = 'op', onLog = () => {} } = {}) {
+  let lastError = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      if (attempt >= maxAttempts || !isRetryableError(error)) break
+      const status = Number(error?.response?.status) || 0
+      const delayMs = baseDelayMs * (2 ** (attempt - 1)) + Math.floor(Math.random() * 200)
+      onLog(`RETRY | ${label} | attempt=${attempt} | status=${status} | code=${error?.code || ''} | delay=${delayMs}ms`)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+  throw lastError
+}
+
+// Circuit breaker per filter group — throttles a group after repeated transient failures.
+const circuitBreakerState = new Map()
+
+function circuitBreakerShouldSkip(filterKey) {
+  const entry = circuitBreakerState.get(filterKey)
+  if (!entry) return false
+  if (Date.now() < entry.openUntilMs) return true
+  if (Date.now() >= entry.openUntilMs && entry.failures > 0 && entry.openUntilMs > 0) {
+    circuitBreakerState.set(filterKey, { failures: 0, openUntilMs: 0 })
+  }
+  return false
+}
+
+function circuitBreakerRecordFailure(filterKey, onLog) {
+  const entry = circuitBreakerState.get(filterKey) || { failures: 0, openUntilMs: 0 }
+  entry.failures += 1
+  if (entry.failures >= 5) {
+    entry.openUntilMs = Date.now() + 5 * 60 * 1000
+    onLog(`CIRCUIT_OPEN | filter=${filterKey} | failures=${entry.failures} | cooldown=5m`)
+    entry.failures = 0
+  }
+  circuitBreakerState.set(filterKey, entry)
+}
+
+function circuitBreakerRecordSuccess(filterKey) {
+  const entry = circuitBreakerState.get(filterKey)
+  if (!entry) return
+  entry.failures = 0
+  entry.openUntilMs = 0
+  circuitBreakerState.set(filterKey, entry)
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  const results = []
+  let index = 0
+  const runners = Array.from({ length: Math.max(1, concurrency) }, async () => {
+    while (index < items.length) {
+      const i = index
+      index += 1
+      results[i] = await worker(items[i], i)
+    }
+  })
+  await Promise.all(runners)
+  return results
+}
+
+function parseEncarDateString(value) {
+  const raw = cleanText(value)
+  if (!raw) return 0
+  // Encar format examples: 20250415123045, 2025-04-15T12:30:45Z, ISO8601
+  if (/^\d{14}$/.test(raw)) {
+    const year = Number(raw.slice(0, 4))
+    const month = Number(raw.slice(4, 6)) - 1
+    const day = Number(raw.slice(6, 8))
+    const hour = Number(raw.slice(8, 10))
+    const minute = Number(raw.slice(10, 12))
+    const second = Number(raw.slice(12, 14))
+    const ts = Date.UTC(year, month, day, hour, minute, second)
+    return Number.isFinite(ts) ? ts : 0
+  }
+  if (/^\d{8}$/.test(raw)) {
+    const year = Number(raw.slice(0, 4))
+    const month = Number(raw.slice(4, 6)) - 1
+    const day = Number(raw.slice(6, 8))
+    const ts = Date.UTC(year, month, day)
+    return Number.isFinite(ts) ? ts : 0
+  }
+  const parsed = Date.parse(raw)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function extractListingRegisteredAtMs(raw = {}) {
+  const candidates = [
+    raw?.ModifiedDate,
+    raw?.FirstRegistrationDate,
+    raw?.RegistrationDate,
+    raw?.SellerProductDate,
+    raw?.OpenDate,
+    raw?.CreatedDate,
+  ]
+  for (const candidate of candidates) {
+    const ms = parseEncarDateString(candidate)
+    if (ms > 0) return ms
+  }
+  return 0
+}
+
+function extractVinFromRaw(raw = {}) {
+  const candidates = [raw?.VehicleNo, raw?.VehicleNum, raw?.CarNo, raw?.Vin, raw?.VIN]
+  for (const candidate of candidates) {
+    const text = cleanText(candidate).toUpperCase()
+    if (text && text.length >= 4) return text
+  }
+  return ''
+}
+
+function extractVinFromDetail(data = {}) {
+  const contact = data?.contact || {}
+  const category = data?.category || {}
+  const vehicle = data?.vehicle || {}
+  const candidates = [
+    data?.vehicleNo,
+    data?.VehicleNo,
+    data?.vin,
+    vehicle?.vin,
+    vehicle?.vehicleNo,
+    contact?.vehicleNo,
+    category?.vehicleNo,
+  ]
+  for (const candidate of candidates) {
+    const text = cleanText(candidate).toUpperCase()
+    if (text && text.length >= 4) return text
+  }
+  return ''
 }
 
 function buildVehiclePresentation(category = {}, ad = {}, fallbackRaw = {}, encarId = '') {
@@ -957,6 +1134,9 @@ export function createStandaloneEncarClient(env = {}) {
   const stalePageLimit = readPositiveInteger(env.TELEGRAM_FRESH_STALE_PAGE_LIMIT, DEFAULT_STALE_PAGE_LIMIT)
   const detailDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_DETAIL_DELAY_MS || '150'), 10) || 150)
   const pageDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_PAGE_DELAY_MS || '250'), 10) || 250)
+  const maxListingAgeMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_MAX_AGE_MS || ''), 10) || DEFAULT_MAX_LISTING_AGE_MS)
+  const groupConcurrency = Math.max(1, Number.parseInt(String(env.TELEGRAM_FRESH_GROUP_CONCURRENCY || ''), 10) || DEFAULT_GROUP_CONCURRENCY)
+  const detailConcurrency = Math.max(1, Number.parseInt(String(env.TELEGRAM_FRESH_DETAIL_CONCURRENCY || ''), 10) || DEFAULT_DETAIL_CONCURRENCY)
 
   async function fetchListPageDirectForQuery(offset = 0, query = '') {
     const response = await apiClient.get('/search/car/list/premium', {
@@ -1124,6 +1304,8 @@ export function createStandaloneEncarClient(env = {}) {
     const contact = data?.contact || {}
     const manage = data?.manage || {}
     const presentation = buildVehiclePresentation(category, ad, fallbackRaw, encarId)
+    const vin = extractVinFromDetail(data) || extractVinFromRaw(fallbackRaw)
+    const registeredAtMs = extractListingRegisteredAtMs(fallbackRaw)
 
     return {
       encarId: cleanText(encarId),
@@ -1139,6 +1321,8 @@ export function createStandaloneEncarClient(env = {}) {
       manage: buildManageMetrics(manage, contact),
       encarUrl: `https://fem.encar.com/cars/detail/${encodeURIComponent(encarId)}`,
       source,
+      vin,
+      registeredAtMs,
     }
   }
 
@@ -1234,137 +1418,219 @@ export function createStandaloneEncarClient(env = {}) {
     throw new Error(`Failed to fetch Encar vehicle ${encarId}`)
   }
 
-  async function scanFreshListings({
+  async function processFilterGroup(initialGroup, {
     getActiveSessions,
     stateStore,
     onFreshListing,
     onLog = () => {},
-  } = {}) {
-    let pagesProcessed = 0
-    let newFreshCount = 0
+  }) {
+    const stats = {
+      filterKey: initialGroup.filterKey,
+      label: initialGroup.label || '',
+      pagesProcessed: 0,
+      listingsChecked: 0,
+      filtered: 0,
+      freshHits: 0,
+      vinDupes: 0,
+      networkErrors: 0,
+      lastFreshAt: '',
+    }
 
-    const initialGroups = buildFilterGroups(getActiveSessions())
-    for (const initialGroup of initialGroups) {
-      let offset = 0
-      let stalePages = 0
-      let knownOnlyPages = 0
-      let groupPagesProcessed = 0
+    if (circuitBreakerShouldSkip(initialGroup.filterKey)) {
+      onLog(`CIRCUIT_SKIP | filter=${initialGroup.filterKey}`)
+      return stats
+    }
 
-      while (groupPagesProcessed < maxPages) {
-        const liveGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === initialGroup.filterKey)
-        if (!liveGroup?.chatIds?.length) break
+    let offset = 0
+    let stalePages = 0
+    let knownOnlyPages = 0
+    let groupPagesProcessed = 0
 
-        let page
+    while (groupPagesProcessed < maxPages) {
+      const liveGroup = buildFilterGroups(getActiveSessions()).find((group) => group.filterKey === initialGroup.filterKey)
+      if (!liveGroup?.chatIds?.length) break
+
+      let page
+      try {
+        page = await retryWithBackoff(
+          () => fetchListPage(offset, liveGroup),
+          { maxAttempts: 3, baseDelayMs: 600, label: `list|${liveGroup.filterKey}|o=${offset}`, onLog },
+        )
+      } catch (error) {
+        stats.networkErrors += 1
+        circuitBreakerRecordFailure(liveGroup.filterKey, onLog)
+        onLog(`LIST_FETCH_FAILED | filter=${liveGroup.filterKey} | offset=${offset} | ${cleanText(error?.message) || 'unknown error'}`)
+        break
+      }
+      if (Array.isArray(page?.sourceDiagnostics) && page.sourceDiagnostics.length) {
+        onLog(`LIST_SOURCE_FALLBACK | filter=${liveGroup.filterKey} | offset=${offset} | source=${cleanText(page?.source) || 'unknown'} | failures=${page.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
+      }
+      if (page?.queryVariantFallbackUsed && page?.effectiveQuery) {
+        onLog(`LIST_QUERY_NORMALIZED | filter=${liveGroup.filterKey} | offset=${offset}`)
+      }
+
+      circuitBreakerRecordSuccess(liveGroup.filterKey)
+
+      const pageCars = Array.isArray(page.cars) ? page.cars : []
+      if (!pageCars.length) break
+
+      stats.pagesProcessed += 1
+      groupPagesProcessed += 1
+      offset += pageCars.length
+
+      const currentGroup = liveGroup
+      const isCustomGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_CUSTOM
+      const isBrandGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_BRAND
+      const activeSessionChatIds = new Set(getActiveSessions().map((s) => s.chatId))
+      const activeChatIds = currentGroup.chatIds.filter((id) => activeSessionChatIds.has(id))
+
+      if (!activeChatIds.length) break
+
+      // Phase 1: filter pre-qualified cars from this page (cheap checks only)
+      const candidates = []
+      for (const raw of pageCars) {
+        const encarId = cleanText(raw?.Id)
+        if (!encarId) continue
+
+        const listingStateKey = `${currentGroup.filterKey}::${encarId}`
+        if (stateStore.getSeenListing(listingStateKey)) continue
+
+        const rawYear = parseListYear(raw?.Year)
+        if (!isCustomGroup && !isBrandGroup && (!Number.isFinite(rawYear) || rawYear < MIN_YEAR)) {
+          stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+          continue
+        }
+
+        const rawListing = {
+          manufacturer: resolveManufacturerDisplayName(raw?.Manufacturer, raw?.Model, raw?.Name),
+          name: normalizeText(raw?.Name),
+          model: normalizeText(raw?.Model || raw?.Badge),
+          year: rawYear,
+          mileage: Number(raw?.Mileage) || 0,
+          priceKrw: (Number(raw?.Price) || 0) * 10000,
+          fuelType: normalizeFuel(raw?.FuelType),
+        }
+
+        if (!matchesSessionFilter(rawListing, currentGroup)) {
+          stats.filtered += 1
+          stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+          continue
+        }
+
+        // Age-based pre-screen using list-level date fields
+        const registeredAtMs = extractListingRegisteredAtMs(raw)
+        if (registeredAtMs > 0 && maxListingAgeMs > 0 && Date.now() - registeredAtMs > maxListingAgeMs) {
+          stats.filtered += 1
+          stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+          continue
+        }
+
+        // Pre-screen list-level manage counts
+        const listViewCount = readListManageCount(raw, 'ManageCnt.ViewCount', 'Manage.ViewCount', 'viewCount')
+        const listCallCount = readListManageCount(raw, 'ManageCnt.CallCount', 'ManageCnt.ConsultCount', 'Manage.CallCount', 'callCount')
+        if (
+          (listViewCount >= 0 && listViewCount > FRESH_RULES.maxViewCount) ||
+          (listCallCount >= 0 && listCallCount > FRESH_RULES.maxCallCount)
+        ) {
+          stats.filtered += 1
+          stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+          continue
+        }
+
+        // VIN dedup (list-level) — if we already notified this VIN recently, skip
+        const listVin = extractVinFromRaw(raw)
+        if (listVin) {
+          const seenVin = stateStore.getSeenVin(listVin)
+          if (seenVin?.notifiedAt) {
+            stats.vinDupes += 1
+            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+            continue
+          }
+        }
+
+        candidates.push({ raw, encarId, listingStateKey, registeredAtMs, listVin })
+      }
+
+      stats.listingsChecked += candidates.length
+      let pageFreshHits = 0
+
+      // Phase 2: fetch details concurrently
+      await runWithConcurrency(candidates, detailConcurrency, async (candidate) => {
+        const { raw, encarId, listingStateKey, listVin } = candidate
+
+        let detail = null
         try {
-          page = await fetchListPage(offset, liveGroup)
+          detail = await retryWithBackoff(
+            () => fetchVehicleDetail(encarId, raw),
+            { maxAttempts: 3, baseDelayMs: 400, label: `detail|${currentGroup.filterKey}|${encarId}`, onLog },
+          )
+          if (Array.isArray(detail?.sourceDiagnostics) && detail.sourceDiagnostics.length) {
+            onLog(`DETAIL_SOURCE_FALLBACK | filter=${currentGroup.filterKey} | encar_id=${encarId} | source=${cleanText(detail?.source) || 'unknown'} | failures=${detail.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
+          }
+          circuitBreakerRecordSuccess(currentGroup.filterKey)
         } catch (error) {
-          onLog(`LIST_FETCH_FAILED | filter=${liveGroup.filterKey} | offset=${offset} | ${cleanText(error?.message) || 'unknown error'}`)
-          break
+          if (isNetworkLikeError(error)) {
+            // Don't mark seen — we want to retry on the next scan cycle
+            stats.networkErrors += 1
+            circuitBreakerRecordFailure(currentGroup.filterKey, onLog)
+            onLog(`DETAIL_FETCH_FAILED_NET | filter=${currentGroup.filterKey} | encar_id=${encarId} | ${cleanText(error?.message) || 'unknown error'}`)
+            return
+          }
+          // Hard failure — mark seen so we don't retry forever
+          stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+          onLog(`DETAIL_FETCH_FAILED | filter=${currentGroup.filterKey} | encar_id=${encarId} | ${cleanText(error?.message) || 'unknown error'}`)
+          return
         }
-        if (Array.isArray(page?.sourceDiagnostics) && page.sourceDiagnostics.length) {
-          onLog(`LIST_SOURCE_FALLBACK | filter=${liveGroup.filterKey} | offset=${offset} | source=${cleanText(page?.source) || 'unknown'} | failures=${page.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
+
+        const vin = detail.vin || listVin
+        if (vin) {
+          const seenVin = stateStore.getSeenVin(vin)
+          if (seenVin?.notifiedAt) {
+            stats.vinDupes += 1
+            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
+            return
+          }
         }
-        if (page?.queryVariantFallbackUsed && page?.effectiveQuery) {
-          onLog(`LIST_QUERY_NORMALIZED | filter=${liveGroup.filterKey} | offset=${offset}`)
+
+        const qualifiesByAge = passesAgeFreshness(detail.registeredAtMs, maxListingAgeMs)
+        const qualifiesByManage = passesFreshRules(detail.manage)
+        const qualifiesFresh = qualifiesByAge && qualifiesByManage
+
+        stateStore.rememberListing(listingStateKey, {
+          priceKrw: detail.priceKrw,
+          viewCount: detail.manage.viewCount,
+          callCount: detail.manage.callCount,
+          subscribeCount: detail.manage.subscribeCount,
+          qualifiesFresh,
+        })
+
+        if (!qualifiesFresh) return
+
+        const matchingChatIds = activeChatIds.filter((chatId) => !stateStore.getSeenListing(`chat:${chatId}::${encarId}`))
+        if (!matchingChatIds.length) return
+
+        pageFreshHits += 1
+        stats.freshHits += 1
+        stats.lastFreshAt = new Date().toISOString()
+
+        const decoratedListing = {
+          ...detail,
+          filterKey: currentGroup.filterKey,
+          filterLabel: currentGroup.label || '',
+          filterMode: normalizeFilterMode(currentGroup.filterMode),
         }
-        const pageCars = Array.isArray(page.cars) ? page.cars : []
-        if (!pageCars.length) break
 
-        pagesProcessed += 1
-        groupPagesProcessed += 1
-        offset += pageCars.length
-        let pageFreshHits = 0
-        let pageNewCarsChecked = 0
+        try {
+          await onFreshListing(decoratedListing, matchingChatIds)
+        } catch (error) {
+          onLog(`DELIVERY_ERROR | filter=${currentGroup.filterKey} | encar_id=${encarId} | ${cleanText(error?.message) || 'unknown error'}`)
+          return
+        }
 
-        // Compute once per page — avoids rebuilding filter groups for every car
-        const currentGroup = liveGroup
-        const isCustomGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_CUSTOM
-        const isBrandGroup = normalizeFilterMode(currentGroup.filterMode) === FILTER_MODE_BRAND
-        const activeSessionChatIds = new Set(getActiveSessions().map((s) => s.chatId))
-        const activeChatIds = currentGroup.chatIds.filter((id) => activeSessionChatIds.has(id))
+        if (vin) stateStore.rememberVin(vin, encarId)
 
-        for (const raw of pageCars) {
-          if (!activeChatIds.length) break
-
-          const encarId = cleanText(raw?.Id)
-          if (!encarId) continue
-
-          const listingStateKey = `${currentGroup.filterKey}::${encarId}`
-          if (stateStore.getSeenListing(listingStateKey)) continue
-
-          const rawYear = parseListYear(raw?.Year)
-          if (!isCustomGroup && !isBrandGroup && (!Number.isFinite(rawYear) || rawYear < MIN_YEAR)) {
-            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
-            continue
-          }
-
-          const rawListing = {
-            manufacturer: resolveManufacturerDisplayName(raw?.Manufacturer, raw?.Model, raw?.Name),
-            name: normalizeText(raw?.Name),
-            model: normalizeText(raw?.Model || raw?.Badge),
-            year: rawYear,
-          }
-
-          if (!matchesSessionFilter(rawListing, currentGroup)) {
-            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
-            continue
-          }
-
-          // Pre-screen with list-level manage counts to avoid unnecessary detail API calls.
-          // Encar list results typically include ManageCnt with viewCount/callCount.
-          // If the listing is already clearly not fresh, remember and skip it immediately.
-          const listViewCount = readListManageCount(raw, 'ManageCnt.ViewCount', 'Manage.ViewCount', 'viewCount')
-          const listCallCount = readListManageCount(raw, 'ManageCnt.CallCount', 'ManageCnt.ConsultCount', 'Manage.CallCount', 'callCount')
-          if (
-            (listViewCount >= 0 && listViewCount > FRESH_RULES.maxViewCount) ||
-            (listCallCount >= 0 && listCallCount > FRESH_RULES.maxCallCount)
-          ) {
-            stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
-            pageNewCarsChecked += 1
-            continue
-          }
-
-          pageNewCarsChecked += 1
-
-          let detail = null
-          try {
-            detail = await fetchVehicleDetail(encarId, raw)
-            if (Array.isArray(detail?.sourceDiagnostics) && detail.sourceDiagnostics.length) {
-              onLog(`DETAIL_SOURCE_FALLBACK | filter=${currentGroup.filterKey} | encar_id=${encarId} | source=${cleanText(detail?.source) || 'unknown'} | failures=${detail.sourceDiagnostics.map((item) => cleanText(item?.source || 'unknown')).join(',')}`)
-            }
-          } catch (error) {
-            onLog(`DETAIL_FETCH_FAILED | filter=${currentGroup.filterKey} | encar_id=${encarId} | ${cleanText(error?.message) || 'unknown error'}`)
-            continue
-          }
-
-          const qualifiesFresh = passesFreshRules(detail.manage)
-          stateStore.rememberListing(listingStateKey, {
-            priceKrw: detail.priceKrw,
-            viewCount: detail.manage.viewCount,
-            callCount: detail.manage.callCount,
-            subscribeCount: detail.manage.subscribeCount,
-            qualifiesFresh,
-          })
-
-          if (!qualifiesFresh) continue
-
-          const matchingChatIds = activeChatIds.filter((chatId) => !stateStore.getSeenListing(`chat:${chatId}::${encarId}`))
-          if (!matchingChatIds.length) continue
-
-          pageFreshHits += 1
-          newFreshCount += 1
-          await onFreshListing(detail, matchingChatIds)
-          for (const chatId of matchingChatIds) {
-            stateStore.rememberListing(`chat:${chatId}::${encarId}`, {
-              priceKrw: detail.priceKrw,
-              viewCount: detail.manage.viewCount,
-              callCount: detail.manage.callCount,
-              subscribeCount: detail.manage.subscribeCount,
-              qualifiesFresh: true,
-              notifiedAt: new Date().toISOString(),
-            })
-          }
-          stateStore.rememberListing(listingStateKey, {
+        for (const chatId of matchingChatIds) {
+          stateStore.rememberListing(`chat:${chatId}::${encarId}`, {
             priceKrw: detail.priceKrw,
             viewCount: detail.manage.viewCount,
             callCount: detail.manage.callCount,
@@ -1372,42 +1638,95 @@ export function createStandaloneEncarClient(env = {}) {
             qualifiesFresh: true,
             notifiedAt: new Date().toISOString(),
           })
-
-          if (detailDelayMs > 0) {
-            await sleep(detailDelayMs)
-          }
         }
+        stateStore.rememberListing(listingStateKey, {
+          priceKrw: detail.priceKrw,
+          viewCount: detail.manage.viewCount,
+          callCount: detail.manage.callCount,
+          subscribeCount: detail.manage.subscribeCount,
+          qualifiesFresh: true,
+          notifiedAt: new Date().toISOString(),
+        })
 
-        // Smarter stale-page tracking:
-        // - If every car on this page was already in seenListings (pageNewCarsChecked === 0),
-        //   it means only re-modified old listings are at the top. With ModifiedDate sort,
-        //   any truly new listing would have appeared earlier, so stop quickly.
-        // - If the page had new (unseen) cars but none qualified as fresh, that is a
-        //   genuinely stale page — apply the normal stalePageLimit.
-        if (pageNewCarsChecked === 0) {
-          knownOnlyPages += 1
-          if (knownOnlyPages >= 2) break
-        } else {
-          knownOnlyPages = 0
-          if (pageFreshHits === 0) {
-            stalePages += 1
-          } else {
-            stalePages = 0
-          }
-          if (stalePages >= stalePageLimit) break
+        if (detailDelayMs > 0) {
+          await sleep(detailDelayMs)
         }
+      })
 
-        if (pageCars.length < LIST_PAGE_SIZE) break
-
-        if (pageDelayMs > 0) {
-          await sleep(pageDelayMs)
-        }
+      // Smarter stale-page tracking (unchanged logic, but now based on the new candidates list)
+      if (candidates.length === 0) {
+        knownOnlyPages += 1
+        if (knownOnlyPages >= 2) break
+      } else {
+        knownOnlyPages = 0
+        if (pageFreshHits === 0) stalePages += 1
+        else stalePages = 0
+        if (stalePages >= stalePageLimit) break
       }
+
+      if (pageCars.length < LIST_PAGE_SIZE) break
+      if (pageDelayMs > 0) await sleep(pageDelayMs)
+    }
+
+    return stats
+  }
+
+  async function scanFreshListings({
+    getActiveSessions,
+    stateStore,
+    onFreshListing,
+    onLog = () => {},
+  } = {}) {
+    const initialGroups = buildFilterGroups(getActiveSessions())
+    if (!initialGroups.length) {
+      return { pagesProcessed: 0, newFreshCount: 0, perFilterStats: [] }
+    }
+
+    const perFilterStats = await runWithConcurrency(initialGroups, groupConcurrency, (group) => {
+      return processFilterGroup(group, { getActiveSessions, stateStore, onFreshListing, onLog })
+    })
+
+    let pagesProcessed = 0
+    let newFreshCount = 0
+    for (const stats of perFilterStats) {
+      pagesProcessed += stats.pagesProcessed
+      newFreshCount += stats.freshHits
+
+      // Persist per-filter counters
+      try {
+        stateStore.incrementFilterStats(stats.filterKey, stats.label, {
+          scans: 1,
+          pagesProcessed: stats.pagesProcessed,
+          listingsChecked: stats.listingsChecked,
+          filtered: stats.filtered,
+          freshHits: stats.freshHits,
+          vinDupes: stats.vinDupes,
+          networkErrors: stats.networkErrors,
+          lastScanAt: new Date().toISOString(),
+          lastFreshAt: stats.lastFreshAt || undefined,
+        })
+      } catch (error) {
+        onLog(`STATS_PERSIST_FAILED | filter=${stats.filterKey} | ${cleanText(error?.message) || 'unknown error'}`)
+      }
+
+      // Stale-filter alert
+      const persistedStats = stateStore.getFilterStats?.(stats.filterKey)
+      const lastFreshAtMs = persistedStats?.lastFreshAt ? Date.parse(persistedStats.lastFreshAt) : 0
+      if (
+        Number.isFinite(lastFreshAtMs) && lastFreshAtMs > 0
+        && Date.now() - lastFreshAtMs > STALE_FILTER_ALERT_MS
+        && stats.pagesProcessed > 0
+      ) {
+        onLog(`FILTER_STALE_ALERT | filter=${stats.filterKey} | label="${stats.label}" | last_fresh_age_h=${Math.round((Date.now() - lastFreshAtMs) / 3600000)}`)
+      }
+
+      onLog(`FILTER_SCAN | key=${stats.filterKey} | pages=${stats.pagesProcessed} | checked=${stats.listingsChecked} | filtered=${stats.filtered} | fresh=${stats.freshHits} | vin_dupes=${stats.vinDupes} | net_err=${stats.networkErrors}`)
     }
 
     return {
       pagesProcessed,
       newFreshCount,
+      perFilterStats,
     }
   }
 

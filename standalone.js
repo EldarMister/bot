@@ -381,7 +381,10 @@ function buildAwaitingCustomFilterText(session) {
 }
 
 function buildListingMessage(listing) {
-  return [
+  const filterLabel = cleanText(listing?.filterLabel)
+  const shortFilter = filterLabel.length > 70 ? `${filterLabel.slice(0, 67)}…` : filterLabel
+
+  const lines = [
     '🆕 Свежее объявление',
     `🚘 ${cleanText(listing?.name) || '-'}`,
     `📦 Комплектация: ${cleanText(listing?.trimLevel) || '-'}`,
@@ -392,7 +395,9 @@ function buildListingMessage(listing) {
     `👀 Просмотры: ${Math.max(0, Number(listing?.manage?.viewCount) || 0)}`,
     `📞 Звонки: ${Math.max(0, Number(listing?.manage?.callCount) || 0)}`,
     `🔗 Encar: ${cleanText(listing?.encarUrl) || '-'}`,
-  ].join('\n')
+  ]
+  if (shortFilter) lines.push(`🔎 Фильтр: ${shortFilter}`)
+  return lines.join('\n')
 }
 
 function getSubscriptionCommand(text) {
@@ -400,7 +405,46 @@ function getSubscriptionCommand(text) {
   if (!command) return ''
   if (command === '/start') return 'start'
   if (command === '/stop') return 'stop'
+  if (command === '/stats') return 'stats'
   return ''
+}
+
+function formatStatsReport(stateStore, session) {
+  const allStats = typeof stateStore.getAllFilterStats === 'function'
+    ? stateStore.getAllFilterStats()
+    : []
+
+  // Show stats for filters that belong to this session (match filterKey prefix)
+  const sessionFilterKeys = new Set()
+  for (const sel of Array.isArray(session?.brandSelections) ? session.brandSelections : []) {
+    const key = `brand:${sel?.brandKey || ''}:${sel?.year || 'all'}:${sel?.month || 'all'}`
+    sessionFilterKeys.add(key)
+  }
+  for (const cf of Array.isArray(session?.customFilters) ? session.customFilters : []) {
+    if (cf?.id) sessionFilterKeys.add(`custom:${cf.id}`)
+  }
+
+  const relevant = allStats.filter((stats) => {
+    if (!sessionFilterKeys.size) return true
+    return sessionFilterKeys.has(stats.filterKey)
+  })
+
+  if (!relevant.length) return '📊 Статистики пока нет. Запусти парсинг.'
+
+  const lines = ['📊 Статистика фильтров:', '']
+  for (const s of relevant.slice(0, 20)) {
+    const label = cleanText(s.label) || s.filterKey
+    const shortLabel = label.length > 50 ? `${label.slice(0, 47)}…` : label
+    const lastScan = s.lastScanAt ? new Date(s.lastScanAt).toISOString().replace('T', ' ').slice(0, 16) + 'Z' : '-'
+    const lastFresh = s.lastFreshAt ? new Date(s.lastFreshAt).toISOString().replace('T', ' ').slice(0, 16) + 'Z' : '-'
+    lines.push(`• ${shortLabel}`)
+    lines.push(`   сканов: ${s.scans} | проверено: ${s.listingsChecked} | отфильтровано: ${s.filtered} | свежих: ${s.freshHits}`)
+    lines.push(`   VIN-дубли: ${s.vinDupes} | сетевые ошибки: ${s.networkErrors}`)
+    lines.push(`   последний скан: ${lastScan} | последняя свежая: ${lastFresh}`)
+    lines.push('')
+  }
+
+  return lines.join('\n').trim()
 }
 
 function normalizeIncomingText(text) {
@@ -573,6 +617,12 @@ export async function startStandaloneTelegramFreshBot() {
       })
       await stateStore.flush()
       await respondWithControl(message, buildStatusText(session), session, KEYBOARD_SECTION_MAIN)
+      return
+    }
+
+    if (command === 'stats') {
+      const report = formatStatsReport(stateStore, currentSession)
+      await sendTelegramMessage(chatId, report)
       return
     }
 

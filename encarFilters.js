@@ -802,10 +802,10 @@ const MANUFACTURER_SIGNAL_MAP = (() => {
   return map
 })()
 
-function extractManufacturerTokensFromQuery(query = '') {
+function extractTokensForFacet(query = '', facet = 'Manufacturer') {
   const tokens = []
   const seen = new Set()
-  const re = /Manufacturer\.([^._)]+)/g
+  const re = new RegExp(`${facet}\\.([^._)]+)`, 'g')
   let match
   while ((match = re.exec(String(query || ''))) !== null) {
     const token = cleanText(match[1])
@@ -816,42 +816,121 @@ function extractManufacturerTokensFromQuery(query = '') {
   return tokens
 }
 
-function extractYearRangeFromQuery(query = '') {
-  const match = String(query || '').match(/Year\.range\(([^)]*)\)/i)
+function extractManufacturerTokensFromQuery(query = '') {
+  return extractTokensForFacet(query, 'Manufacturer')
+}
+
+function extractModelTokensFromQuery(query = '') {
+  const combined = [
+    ...extractTokensForFacet(query, 'Model'),
+    ...extractTokensForFacet(query, 'ModelGroup'),
+  ]
+  const seen = new Set()
+  return combined.filter((token) => {
+    if (seen.has(token)) return false
+    seen.add(token)
+    return true
+  })
+}
+
+function extractFuelTokensFromQuery(query = '') {
+  return extractTokensForFacet(query, 'FuelType')
+}
+
+function extractCarTypeFromQuery(query = '') {
+  const match = String(query || '').match(/CarType\.([YN])/)
+  return match ? match[1] : null
+}
+
+function extractRangeFromQuery(query = '', facet = 'Year') {
+  const match = String(query || '').match(new RegExp(`${facet}\\.range\\(([^)]*)\\)`, 'i'))
   if (!match) return null
   const [startRaw, endRaw] = match[1].split('..').map((value) => cleanText(value))
   const start = startRaw ? Number.parseInt(startRaw, 10) : null
   const end = endRaw ? Number.parseInt(endRaw, 10) : null
   return {
-    startYear: Number.isFinite(start) && start > 0 ? Math.floor(start / 100) : null,
-    endYear: Number.isFinite(end) && end > 0 ? Math.floor(end / 100) : null,
+    start: Number.isFinite(start) ? start : null,
+    end: Number.isFinite(end) ? end : null,
   }
+}
+
+function extractYearRangeFromQuery(query = '') {
+  const range = extractRangeFromQuery(query, 'Year')
+  if (!range) return null
+  return {
+    startYear: range.start && range.start > 0 ? Math.floor(range.start / 100) : null,
+    endYear: range.end && range.end > 0 ? Math.floor(range.end / 100) : null,
+  }
+}
+
+const FUEL_SIGNAL_MAP = new Map([
+  ['가솔린', ['gasoline', 'petrol', 'benzin']],
+  ['디젤', ['diesel']],
+  ['하이브리드', ['hybrid']],
+  ['전기', ['electric', 'ev']],
+  ['LPG', ['lpg']],
+  ['수소', ['hydrogen']],
+  ['CNG', ['cng']],
+])
+
+function signalIncludesToken(haystack, token) {
+  const normalizedSignal = normalizeSignal(token)
+  if (!normalizedSignal) return false
+  return haystack.some((value) => value.includes(normalizedSignal) || normalizedSignal.includes(value))
 }
 
 export function matchesCustomQuery(listing = {}, query = '') {
   const normalizedQuery = cleanText(query)
   if (!normalizedQuery) return true
 
-  // Manufacturer constraint
-  const tokens = extractManufacturerTokensFromQuery(normalizedQuery)
-  if (tokens.length > 0) {
-    const haystack = [listing?.manufacturer, listing?.name, listing?.model]
-      .map((value) => normalizeSignal(value))
-      .filter(Boolean)
+  const haystack = [listing?.manufacturer, listing?.name, listing?.model]
+    .map((value) => normalizeSignal(value))
+    .filter(Boolean)
 
-    const anyMatch = tokens.some((token) => {
+  // Manufacturer constraint
+  const manufacturerTokens = extractManufacturerTokensFromQuery(normalizedQuery)
+  if (manufacturerTokens.length > 0) {
+    const anyMatch = manufacturerTokens.some((token) => {
       const signals = MANUFACTURER_SIGNAL_MAP.get(token)
         || MANUFACTURER_SIGNAL_MAP.get(normalizeSignal(token))
         || [token]
+      return signals.some((signal) => signalIncludesToken(haystack, signal))
+    })
+    if (!anyMatch) return false
+  }
 
-      return signals.some((signal) => {
-        const normalizedSignal = normalizeSignal(signal)
-        if (!normalizedSignal) return false
-        return haystack.some((value) => value.includes(normalizedSignal) || normalizedSignal.includes(value))
+  // Model / ModelGroup constraint — must match listing name or model
+  const modelTokens = extractModelTokensFromQuery(normalizedQuery)
+  if (modelTokens.length > 0) {
+    const anyMatch = modelTokens.some((token) => signalIncludesToken(haystack, token))
+    if (!anyMatch) return false
+  }
+
+  // FuelType constraint
+  const fuelTokens = extractFuelTokensFromQuery(normalizedQuery)
+  if (fuelTokens.length > 0 && listing?.fuelType) {
+    const fuelHaystack = [normalizeSignal(listing.fuelType)]
+    const anyMatch = fuelTokens.some((token) => {
+      const signals = FUEL_SIGNAL_MAP.get(token) || [token]
+      return signals.some((signal) => signalIncludesToken(fuelHaystack, signal))
+    })
+    if (!anyMatch) return false
+  }
+
+  // CarType constraint (Y=domestic / N=imported) — verified via preset lookup
+  const carType = extractCarTypeFromQuery(normalizedQuery)
+  if (carType && listing?.manufacturer) {
+    const listingManufacturer = normalizeSignal(listing.manufacturer)
+    const matchedPreset = BRAND_PRESETS.find((preset) => {
+      return (preset.signals || []).some((signal) => {
+        const sig = normalizeSignal(signal)
+        return sig && (listingManufacturer.includes(sig) || sig.includes(listingManufacturer))
       })
     })
-
-    if (!anyMatch) return false
+    if (matchedPreset) {
+      const expectedScope = carType === 'Y' ? PARSE_SCOPE_DOMESTIC : PARSE_SCOPE_IMPORTED
+      if (matchedPreset.scope && matchedPreset.scope !== expectedScope) return false
+    }
   }
 
   // Year range constraint
@@ -861,6 +940,27 @@ export function matchesCustomQuery(listing = {}, query = '') {
     if (Number.isFinite(listingYearRaw) && listingYearRaw > 0) {
       if (yearRange.startYear && listingYearRaw < yearRange.startYear) return false
       if (yearRange.endYear && listingYearRaw > yearRange.endYear) return false
+    }
+  }
+
+  // Mileage constraint (in km)
+  const mileageRange = extractRangeFromQuery(normalizedQuery, 'Mileage')
+  if (mileageRange && (mileageRange.start !== null || mileageRange.end !== null)) {
+    const mileage = Number.parseInt(String(listing?.mileage || ''), 10)
+    if (Number.isFinite(mileage) && mileage > 0) {
+      if (mileageRange.start !== null && mileage < mileageRange.start) return false
+      if (mileageRange.end !== null && mileage > mileageRange.end) return false
+    }
+  }
+
+  // Price constraint (Encar uses units of 10,000 KRW: "만원")
+  const priceRange = extractRangeFromQuery(normalizedQuery, 'Price')
+  if (priceRange && (priceRange.start !== null || priceRange.end !== null)) {
+    const priceKrw = Number.parseInt(String(listing?.priceKrw || ''), 10)
+    if (Number.isFinite(priceKrw) && priceKrw > 0) {
+      const priceManWon = Math.round(priceKrw / 10000)
+      if (priceRange.start !== null && priceManWon < priceRange.start) return false
+      if (priceRange.end !== null && priceManWon > priceRange.end) return false
     }
   }
 
