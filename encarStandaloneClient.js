@@ -1610,12 +1610,6 @@ export function createStandaloneEncarClient(env = {}) {
       if (!activeChatIds.length) break
 
       // Phase 1: filter pre-qualified cars from this page (cheap checks only)
-      // DEBUG: log list-level fields once to check if ManageCnt is present
-      if (pageCars.length > 0 && stats.pagesProcessed === 1) {
-        const sampleKeys = Object.keys(pageCars[0] || {})
-        const hasMgmt = sampleKeys.some((k) => k === 'ManageCnt' || k === 'Manage')
-        onLog(`DEBUG_LIST_FIELDS | keys=${sampleKeys.join(',')} | hasMgmt=${hasMgmt} | ManageCnt=${JSON.stringify(pageCars[0]?.ManageCnt ?? pageCars[0]?.Manage ?? null)}`)
-      }
       const candidates = []
       for (const raw of pageCars) {
         const encarId = cleanText(raw?.Id)
