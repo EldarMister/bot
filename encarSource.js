@@ -2,8 +2,12 @@ import axios from 'axios'
 
 const PROXY_AUTH_FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000
 const PROXY_GENERIC_FAILURE_COOLDOWN_MS = 30 * 60 * 1000
+const DIRECT_BLOCK_COOLDOWN_MS = 15 * 60 * 1000
+const DIRECT_CONSECUTIVE_FAIL_THRESHOLD = 3
 
 let proxySuppressedUntil = 0
+let directSuppressedUntil = 0
+let directConsecutiveFailures = 0
 
 const lastHealthySources = new Map([
   ['list', 'direct'],
@@ -58,6 +62,43 @@ export function suppressEncarProxy(status = 0) {
     : PROXY_GENERIC_FAILURE_COOLDOWN_MS
 
   proxySuppressedUntil = Math.max(proxySuppressedUntil, Date.now() + durationMs)
+}
+
+export function isEncarDirectSuppressed(env = globalThis.process?.env) {
+  // Only suppress direct if we actually have a proxy to fall back to
+  return hasEncarProxy(env) && directSuppressedUntil > Date.now()
+}
+
+export function getEncarDirectSuppressedUntil() {
+  return directSuppressedUntil > Date.now() ? new Date(directSuppressedUntil).toISOString() : ''
+}
+
+export function recordEncarDirectFailure(status = 0, env = globalThis.process?.env) {
+  // Only apply block-cooldown when a proxy alternative exists
+  if (!hasEncarProxy(env)) {
+    directConsecutiveFailures = 0
+    directSuppressedUntil = 0
+    return
+  }
+  const isBlockingStatus = status === 403 || status === 407 || status === 429 || status >= 500
+  if (!isBlockingStatus) {
+    directConsecutiveFailures = 0
+    return
+  }
+  directConsecutiveFailures += 1
+  if (directConsecutiveFailures >= DIRECT_CONSECUTIVE_FAIL_THRESHOLD) {
+    directSuppressedUntil = Math.max(directSuppressedUntil, Date.now() + DIRECT_BLOCK_COOLDOWN_MS)
+  }
+}
+
+export function recordEncarDirectSuccess() {
+  directConsecutiveFailures = 0
+  directSuppressedUntil = 0
+}
+
+export function resetEncarDirectSuppression() {
+  directConsecutiveFailures = 0
+  directSuppressedUntil = 0
 }
 
 export function rememberHealthyEncarSource(channel, source) {

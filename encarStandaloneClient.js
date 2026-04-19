@@ -7,8 +7,12 @@ import {
   fetchViaEncarProxy,
   getPreferredEncarSource,
   hasEncarProxy,
+  isEncarDirectSuppressed,
   isEncarProxySuppressed,
+  recordEncarDirectFailure,
+  recordEncarDirectSuccess,
   rememberHealthyEncarSource,
+  resetEncarDirectSuppression,
   shouldRetryViaAlternateEncarSource,
   suppressEncarProxy,
 } from './encarSource.js'
@@ -32,9 +36,13 @@ const FRESH_RULES = Object.freeze({
   maxSubscribeCount: 3,
 })
 
-const DEFAULT_MAX_LISTING_AGE_MS = 60 * 60 * 1000 // 60 minutes
+const DEFAULT_MAX_LISTING_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 const DEFAULT_GROUP_CONCURRENCY = 3
 const DEFAULT_DETAIL_CONCURRENCY = 4
+const DEFAULT_DETAIL_CONCURRENCY_MAX = 6
+const DEFAULT_DETAIL_CONCURRENCY_MIN = 2
+const ADAPTIVE_DETAIL_PENALTY_MS = 10 * 60 * 1000
+const ADAPTIVE_DETAIL_RECOVERY_STREAK = 3
 const STALE_FILTER_ALERT_MS = 6 * 60 * 60 * 1000 // 6 hours
 
 const JAPANESE_BRAND_ALIASES = [
@@ -1135,8 +1143,57 @@ export function createStandaloneEncarClient(env = {}) {
   const detailDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_DETAIL_DELAY_MS || '150'), 10) || 150)
   const pageDelayMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_PAGE_DELAY_MS || '250'), 10) || 250)
   const maxListingAgeMs = Math.max(0, Number.parseInt(String(env.TELEGRAM_FRESH_MAX_AGE_MS || ''), 10) || DEFAULT_MAX_LISTING_AGE_MS)
-  const groupConcurrency = Math.max(1, Number.parseInt(String(env.TELEGRAM_FRESH_GROUP_CONCURRENCY || ''), 10) || DEFAULT_GROUP_CONCURRENCY)
-  const detailConcurrency = Math.max(1, Number.parseInt(String(env.TELEGRAM_FRESH_DETAIL_CONCURRENCY || ''), 10) || DEFAULT_DETAIL_CONCURRENCY)
+  const groupConcurrency = readPositiveInteger(env.TELEGRAM_FRESH_GROUP_CONCURRENCY, DEFAULT_GROUP_CONCURRENCY)
+  const detailConcurrencyBase = readPositiveInteger(env.TELEGRAM_FRESH_DETAIL_CONCURRENCY, DEFAULT_DETAIL_CONCURRENCY)
+  const rawDetailConcurrencyMax = Math.max(
+    DEFAULT_DETAIL_CONCURRENCY_MIN,
+    Math.min(readPositiveInteger(env.TELEGRAM_FRESH_DETAIL_CONCURRENCY_MAX, DEFAULT_DETAIL_CONCURRENCY_MAX), DEFAULT_DETAIL_CONCURRENCY_MAX),
+  )
+  const rawDetailConcurrencyMin = Math.max(
+    DEFAULT_DETAIL_CONCURRENCY_MIN,
+    Math.min(readPositiveInteger(env.TELEGRAM_FRESH_DETAIL_CONCURRENCY_MIN, DEFAULT_DETAIL_CONCURRENCY_MIN), DEFAULT_DETAIL_CONCURRENCY_MAX),
+  )
+  const detailConcurrencyMax = Math.max(rawDetailConcurrencyMax, rawDetailConcurrencyMin)
+  const detailConcurrencyMin = Math.min(rawDetailConcurrencyMin, rawDetailConcurrencyMax)
+  const initialDetailConcurrency = Math.min(detailConcurrencyMax, Math.max(detailConcurrencyMin, detailConcurrencyBase))
+
+  // Adaptive detail concurrency starts from the configured base, drops on 429, then recovers gradually.
+  const adaptiveDetail = {
+    concurrency: initialDetailConcurrency,
+    penaltyUntilMs: 0,
+    cleanStreak: 0,
+    recent429InScan: 0,
+  }
+
+  function notifyAdaptive429(onLog = () => {}) {
+    adaptiveDetail.recent429InScan += 1
+    if (adaptiveDetail.concurrency > detailConcurrencyMin) {
+      const previous = adaptiveDetail.concurrency
+      adaptiveDetail.concurrency = detailConcurrencyMin
+      adaptiveDetail.penaltyUntilMs = Date.now() + ADAPTIVE_DETAIL_PENALTY_MS
+      adaptiveDetail.cleanStreak = 0
+      onLog(`ADAPTIVE_THROTTLE | concurrency ${previous} -> ${adaptiveDetail.concurrency} | penalty=${Math.round(ADAPTIVE_DETAIL_PENALTY_MS / 60000)}m`)
+    }
+  }
+
+  function notifyAdaptiveScanEnd(onLog = () => {}) {
+    if (adaptiveDetail.recent429InScan === 0) {
+      adaptiveDetail.cleanStreak += 1
+      if (
+        Date.now() >= adaptiveDetail.penaltyUntilMs
+        && adaptiveDetail.cleanStreak >= ADAPTIVE_DETAIL_RECOVERY_STREAK
+        && adaptiveDetail.concurrency < detailConcurrencyMax
+      ) {
+        const previous = adaptiveDetail.concurrency
+        adaptiveDetail.concurrency = Math.min(detailConcurrencyMax, adaptiveDetail.concurrency + 1)
+        adaptiveDetail.cleanStreak = 0
+        onLog(`ADAPTIVE_RELAX | concurrency ${previous} -> ${adaptiveDetail.concurrency}`)
+      }
+    } else {
+      adaptiveDetail.cleanStreak = 0
+    }
+    adaptiveDetail.recent429InScan = 0
+  }
 
   async function fetchListPageDirectForQuery(offset = 0, query = '') {
     const response = await apiClient.get('/search/car/list/premium', {
@@ -1230,18 +1287,22 @@ export function createStandaloneEncarClient(env = {}) {
     throw lastError || new Error('Failed to fetch Encar list via proxy')
   }
 
-  async function fetchListPage(offset = 0, filterGroup = null) {
-    const preferred = hasEncarProxy(env) && !isEncarProxySuppressed(env)
-      ? getPreferredEncarSource('list')
+  async function fetchListPage(offset = 0, filterGroup = null, onLog = () => {}) {
+    const proxyAvailable = hasEncarProxy(env) && !isEncarProxySuppressed(env)
+    const directBlocked = isEncarDirectSuppressed(env)
+    const preferred = proxyAvailable && (directBlocked || getPreferredEncarSource('list') === 'proxy')
+      ? 'proxy'
       : 'direct'
     const sourceDiagnostics = []
     const fetchers = []
 
-    if (preferred === 'proxy' && hasEncarProxy(env) && !isEncarProxySuppressed(env)) {
+    if (preferred === 'proxy' && proxyAvailable) {
       fetchers.push({ name: 'proxy', run: () => fetchListPageViaProxy(offset, filterGroup) })
     }
-    fetchers.push({ name: 'direct', run: () => fetchListPageDirect(offset, filterGroup) })
-    if (preferred !== 'proxy' && hasEncarProxy(env) && !isEncarProxySuppressed(env)) {
+    if (!directBlocked || !proxyAvailable) {
+      fetchers.push({ name: 'direct', run: () => fetchListPageDirect(offset, filterGroup) })
+    }
+    if (preferred !== 'proxy' && proxyAvailable) {
       fetchers.push({ name: 'proxy', run: () => fetchListPageViaProxy(offset, filterGroup) })
     }
 
@@ -1251,6 +1312,7 @@ export function createStandaloneEncarClient(env = {}) {
       try {
         const page = await fetcher.run()
         rememberHealthyEncarSource('list', fetcher.name)
+        if (fetcher.name === 'direct') recordEncarDirectSuccess()
         return {
           ...page,
           source: fetcher.name,
@@ -1258,8 +1320,12 @@ export function createStandaloneEncarClient(env = {}) {
           fallbackUsed: sourceDiagnostics.length > 0,
         }
       } catch (error) {
+        const status = Number(error?.response?.status) || 0
+        if (status === 429) notifyAdaptive429(onLog)
         if (fetcher.name === 'proxy') {
-          suppressEncarProxy(Number(error?.response?.status) || 0)
+          suppressEncarProxy(status)
+        } else if (fetcher.name === 'direct') {
+          recordEncarDirectFailure(status, env)
         }
         sourceDiagnostics.push(buildEncarSourceDiagnostic(fetcher.name, error))
         lastError = error
@@ -1284,6 +1350,30 @@ export function createStandaloneEncarClient(env = {}) {
       } catch (error) {
         suppressEncarProxy(Number(error?.response?.status) || 0)
         sourceDiagnostics.push(buildEncarSourceDiagnostic('proxy', error, 'suppressed_probe'))
+        lastError = error
+      }
+    }
+
+    // If proxy also failed while direct was suppressed, re-probe direct as a last resort
+    if (
+      directBlocked
+      && !sourceDiagnostics.some((item) => item?.source === 'direct')
+      && shouldRetryViaAlternateEncarSource(lastError)
+    ) {
+      resetEncarDirectSuppression()
+      try {
+        const page = await fetchListPageDirect(offset, filterGroup)
+        rememberHealthyEncarSource('list', 'direct')
+        recordEncarDirectSuccess()
+        return {
+          ...page,
+          source: 'direct',
+          sourceDiagnostics,
+          fallbackUsed: true,
+        }
+      } catch (error) {
+        recordEncarDirectFailure(Number(error?.response?.status) || 0, env)
+        sourceDiagnostics.push(buildEncarSourceDiagnostic('direct', error, 'direct_reprobe'))
         lastError = error
       }
     }
@@ -1353,18 +1443,22 @@ export function createStandaloneEncarClient(env = {}) {
     return buildVehicleDetailResult(encarId, data || {}, fallbackRaw, 'proxy')
   }
 
-  async function fetchVehicleDetail(encarId, fallbackRaw = {}) {
-    const preferred = hasEncarProxy(env) && !isEncarProxySuppressed(env)
-      ? getPreferredEncarSource('detail')
+  async function fetchVehicleDetail(encarId, fallbackRaw = {}, onLog = () => {}) {
+    const proxyAvailable = hasEncarProxy(env) && !isEncarProxySuppressed(env)
+    const directBlocked = isEncarDirectSuppressed(env)
+    const preferred = proxyAvailable && (directBlocked || getPreferredEncarSource('detail') === 'proxy')
+      ? 'proxy'
       : 'direct'
     const sourceDiagnostics = []
     const fetchers = []
 
-    if (preferred === 'proxy' && hasEncarProxy(env) && !isEncarProxySuppressed(env)) {
+    if (preferred === 'proxy' && proxyAvailable) {
       fetchers.push({ name: 'proxy', run: () => fetchVehicleDetailViaProxy(encarId, fallbackRaw) })
     }
-    fetchers.push({ name: 'direct', run: () => fetchVehicleDetailDirect(encarId, fallbackRaw) })
-    if (preferred !== 'proxy' && hasEncarProxy(env) && !isEncarProxySuppressed(env)) {
+    if (!directBlocked || !proxyAvailable) {
+      fetchers.push({ name: 'direct', run: () => fetchVehicleDetailDirect(encarId, fallbackRaw) })
+    }
+    if (preferred !== 'proxy' && proxyAvailable) {
       fetchers.push({ name: 'proxy', run: () => fetchVehicleDetailViaProxy(encarId, fallbackRaw) })
     }
 
@@ -1374,14 +1468,19 @@ export function createStandaloneEncarClient(env = {}) {
       try {
         const detail = await fetcher.run()
         rememberHealthyEncarSource('detail', fetcher.name)
+        if (fetcher.name === 'direct') recordEncarDirectSuccess()
         return {
           ...detail,
           sourceDiagnostics,
           fallbackUsed: sourceDiagnostics.length > 0,
         }
       } catch (error) {
+        const status = Number(error?.response?.status) || 0
+        if (status === 429) notifyAdaptive429(onLog)
         if (fetcher.name === 'proxy') {
-          suppressEncarProxy(Number(error?.response?.status) || 0)
+          suppressEncarProxy(status)
+        } else if (fetcher.name === 'direct') {
+          recordEncarDirectFailure(status, env)
         }
         sourceDiagnostics.push(buildEncarSourceDiagnostic(fetcher.name, error))
         lastError = error
@@ -1405,6 +1504,28 @@ export function createStandaloneEncarClient(env = {}) {
       } catch (error) {
         suppressEncarProxy(Number(error?.response?.status) || 0)
         sourceDiagnostics.push(buildEncarSourceDiagnostic('proxy', error, 'suppressed_probe'))
+        lastError = error
+      }
+    }
+
+    if (
+      directBlocked
+      && !sourceDiagnostics.some((item) => item?.source === 'direct')
+      && shouldRetryViaAlternateEncarSource(lastError)
+    ) {
+      resetEncarDirectSuppression()
+      try {
+        const detail = await fetchVehicleDetailDirect(encarId, fallbackRaw)
+        rememberHealthyEncarSource('detail', 'direct')
+        recordEncarDirectSuccess()
+        return {
+          ...detail,
+          sourceDiagnostics,
+          fallbackUsed: true,
+        }
+      } catch (error) {
+        recordEncarDirectFailure(Number(error?.response?.status) || 0, env)
+        sourceDiagnostics.push(buildEncarSourceDiagnostic('direct', error, 'direct_reprobe'))
         lastError = error
       }
     }
@@ -1453,10 +1574,12 @@ export function createStandaloneEncarClient(env = {}) {
       let page
       try {
         page = await retryWithBackoff(
-          () => fetchListPage(offset, liveGroup),
+          () => fetchListPage(offset, liveGroup, onLog),
           { maxAttempts: 3, baseDelayMs: 600, label: `list|${liveGroup.filterKey}|o=${offset}`, onLog },
         )
       } catch (error) {
+        const status = Number(error?.response?.status) || 0
+        if (status === 429) notifyAdaptive429(onLog)
         stats.networkErrors += 1
         circuitBreakerRecordFailure(liveGroup.filterKey, onLog)
         onLog(`LIST_FETCH_FAILED | filter=${liveGroup.filterKey} | offset=${offset} | ${cleanText(error?.message) || 'unknown error'}`)
@@ -1555,13 +1678,13 @@ export function createStandaloneEncarClient(env = {}) {
       let pageFreshHits = 0
 
       // Phase 2: fetch details concurrently
-      await runWithConcurrency(candidates, detailConcurrency, async (candidate) => {
+      await runWithConcurrency(candidates, adaptiveDetail.concurrency, async (candidate) => {
         const { raw, encarId, listingStateKey, listVin } = candidate
 
         let detail = null
         try {
           detail = await retryWithBackoff(
-            () => fetchVehicleDetail(encarId, raw),
+            () => fetchVehicleDetail(encarId, raw, onLog),
             { maxAttempts: 3, baseDelayMs: 400, label: `detail|${currentGroup.filterKey}|${encarId}`, onLog },
           )
           if (Array.isArray(detail?.sourceDiagnostics) && detail.sourceDiagnostics.length) {
@@ -1569,6 +1692,8 @@ export function createStandaloneEncarClient(env = {}) {
           }
           circuitBreakerRecordSuccess(currentGroup.filterKey)
         } catch (error) {
+          const status = Number(error?.response?.status) || 0
+          if (status === 429) notifyAdaptive429(onLog)
           if (isNetworkLikeError(error)) {
             // Don't mark seen — we want to retry on the next scan cycle
             stats.networkErrors += 1
@@ -1682,7 +1807,7 @@ export function createStandaloneEncarClient(env = {}) {
       return { pagesProcessed: 0, newFreshCount: 0, perFilterStats: [] }
     }
 
-    const perFilterStats = await runWithConcurrency(initialGroups, groupConcurrency, (group) => {
+    const perFilterStats = await runWithConcurrency(initialGroups, Math.min(groupConcurrency, initialGroups.length), (group) => {
       return processFilterGroup(group, { getActiveSessions, stateStore, onFreshListing, onLog })
     })
 
@@ -1723,10 +1848,14 @@ export function createStandaloneEncarClient(env = {}) {
       onLog(`FILTER_SCAN | key=${stats.filterKey} | pages=${stats.pagesProcessed} | checked=${stats.listingsChecked} | filtered=${stats.filtered} | fresh=${stats.freshHits} | vin_dupes=${stats.vinDupes} | net_err=${stats.networkErrors}`)
     }
 
+    // Adjust detail concurrency based on this scan's 429 rate
+    notifyAdaptiveScanEnd(onLog)
+
     return {
       pagesProcessed,
       newFreshCount,
       perFilterStats,
+      detailConcurrency: adaptiveDetail.concurrency,
     }
   }
 
