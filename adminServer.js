@@ -10,6 +10,13 @@ function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
+function cleanMultilineText(value) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u0000/g, '')
+    .trim()
+}
+
 function timingSafeEqual(a, b) {
   const bufA = Buffer.from(String(a))
   const bufB = Buffer.from(String(b))
@@ -124,13 +131,13 @@ function buildLoginPage(errorText = '') {
   .login-card{
     position:relative;
     z-index:1;
-    width:min(420px,100%);
+    width:min(460px,100%);
     border:1px solid var(--line);
     border-radius:28px;
     box-shadow:var(--shadow);
     backdrop-filter:blur(18px);
     overflow:hidden;
-    padding:30px;
+    padding:28px;
     background:linear-gradient(180deg, rgba(14,28,44,.94), rgba(10,20,32,.92));
   }
   .login-card::after{
@@ -141,37 +148,17 @@ function buildLoginPage(errorText = '') {
     border:1px solid rgba(255,255,255,.05);
     pointer-events:none;
   }
-  .login-badge{
-    display:inline-flex;
-    align-items:center;
-    gap:8px;
-    width:max-content;
-    padding:8px 12px;
-    border-radius:999px;
-    background:rgba(255,180,77,.12);
-    color:#ffd69c;
-    font-size:12px;
-    letter-spacing:.1em;
-    text-transform:uppercase;
-  }
   .login-card h2{
-    margin:10px 0 8px;
-    font-size:28px;
+    margin:0 0 18px;
+    font-size:32px;
     letter-spacing:-.03em;
-  }
-  .login-card p{
-    margin:0;
-    color:var(--muted);
-    line-height:1.6;
-    font-size:14px;
   }
   .field{
     display:grid;
-    gap:8px;
+    gap:10px;
   }
   .field span{
-    font-size:13px;
-    color:#bfd0e3;
+    display:none;
   }
   .field input{
     width:100%;
@@ -213,11 +200,6 @@ function buildLoginPage(errorText = '') {
     transform:translateY(-1px);
     filter:brightness(1.04);
   }
-  .login-foot{
-    color:var(--muted);
-    font-size:12px;
-    line-height:1.5;
-  }
   @media (max-width:640px){
     body{padding:16px}
     .login-card{padding:22px}
@@ -226,18 +208,12 @@ function buildLoginPage(errorText = '') {
 </head>
 <body>
   <form class="login-card" method="POST" action="/admin/login">
-    <div>
-      <div class="login-badge">Restricted Access</div>
-      <h2>Вход в панель</h2>
-      <p>Используй пароль администратора, чтобы открыть управление ботом и служебные действия.</p>
-    </div>
+    <h2>Вход в панель</h2>
     ${errHtml}
     <label class="field">
-      <span>Пароль</span>
       <input type="password" name="password" placeholder="Введите пароль" autofocus required/>
     </label>
-    <button class="submit" type="submit">Открыть панель</button>
-    <div class="login-foot">Сессия хранится локально и предназначена только для этой админ‑панели.</div>
+    <button class="submit" type="submit">Войти</button>
   </form>
 </body>
 </html>`
@@ -1172,9 +1148,9 @@ function stopLogsStream(){ if(logsTimer){clearInterval(logsTimer);logsTimer=null
 function loadActions(){
   panels.actions.innerHTML = renderPanelFrame('actions', \`<div class="action-grid">
     <section class="action-card">
-      <h3>Рассылка всем активным</h3>
-      <p>Отправь единое сообщение всем пользователям, у которых парсинг сейчас включён.</p>
-      <textarea id="broadcast-text" placeholder="Текст сообщения для активных пользователей..."></textarea>
+      <h3>Рассылка всем пользователям</h3>
+      <p>Отправь единое сообщение по всей зарегистрированной базе Telegram-чатов.</p>
+      <textarea id="broadcast-text" placeholder="Текст сообщения для всех пользователей..."></textarea>
       <div class="row" style="margin-top:12px">
         <button class="primary" onclick="doBroadcast()">Отправить рассылку</button>
         <span id="broadcast-status" class="muted"></span>
@@ -1215,11 +1191,36 @@ async function clearSeen(){
   await refreshAll()
 }
 async function doBroadcast(){
+  const statusNode = document.getElementById('broadcast-status')
   const text = document.getElementById('broadcast-text').value.trim()
   if(!text)return
-  if(!confirm('Отправить это сообщение всем активным пользователям?'))return
-  const r = await api('/admin/api/broadcast', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})})
-  document.getElementById('broadcast-status').textContent = 'Отправлено: '+(r?.sent||0)+' / ошибок: '+(r?.failed||0)
+  if(!confirm('Отправить это сообщение всем зарегистрированным пользователям?'))return
+  if(statusNode) statusNode.textContent = 'Идёт отправка...'
+  try {
+    const response = await fetch('/admin/api/broadcast', {
+      method:'POST',
+      credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text}),
+    })
+    if (response.status === 401){location.href='/admin/login';return}
+    let payload = null
+    try { payload = await response.json() } catch {}
+    if (!response.ok) {
+      throw new Error(payload?.error || ('HTTP '+response.status))
+    }
+    const sent = Number(payload?.sent) || 0
+    const failed = Number(payload?.failed) || 0
+    const total = Number(payload?.total) || sent + failed
+    const deactivated = Number(payload?.deactivated) || 0
+    const firstError = String(payload?.firstError || '')
+    let statusText = 'Отправлено: '+sent+' / ошибок: '+failed+' / всего: '+total
+    if (deactivated > 0) statusText += ' / отключено: '+deactivated
+    if (firstError) statusText += ' / первая ошибка: '+firstError
+    if(statusNode) statusNode.textContent = statusText
+  } catch (error) {
+    if(statusNode) statusNode.textContent = 'Ошибка рассылки: '+String(error?.message || 'unknown error')
+  }
 }
 
 function loadTab(tab){
@@ -1424,14 +1425,14 @@ export function startAdminServer({ stateStore, logBuffer, env, actions = {} } = 
         const body = await readBody(req)
         let payload
         try { payload = JSON.parse(body || '{}') } catch { payload = {} }
-        const text = cleanText(payload?.text)
+        const text = cleanMultilineText(payload?.text)
         if (!text) return jsonResponse(res, 400, { error: 'text required' })
         if (typeof actions.broadcast !== 'function') {
           return jsonResponse(res, 501, { error: 'broadcast not available' })
         }
         const result = await actions.broadcast(text)
-        logBuffer?.warn(`ADMIN_BROADCAST | sent=${result?.sent || 0} | failed=${result?.failed || 0}`)
-        return jsonResponse(res, 200, result || { sent: 0, failed: 0 })
+        logBuffer?.warn(`ADMIN_BROADCAST | sent=${result?.sent || 0} | failed=${result?.failed || 0} | total=${result?.total || 0}`)
+        return jsonResponse(res, 200, result || { sent: 0, failed: 0, total: 0, deactivated: 0, firstError: '' })
       }
 
       if (pathname === '/admin/api/clear-seen' && req.method === 'POST') {

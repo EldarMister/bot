@@ -31,6 +31,7 @@ dotenv.config()
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const TELEGRAM_API_BASE = 'https://api.telegram.org'
 const TELEGRAM_TIMEOUT_MS = 20000
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message']
 const DEFAULT_STATE_FILE = path.join(__dirname, 'data', 'state.json')
 const DEFAULT_ACTIVE_DELAY_MS = 750
@@ -54,6 +55,43 @@ const KEYBOARD_SECTION_CUSTOM = 'custom'
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
+}
+
+function cleanMultilineText(value) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u0000/g, '')
+    .trim()
+}
+
+function getTelegramErrorText(error) {
+  const httpStatus = Number(error?.response?.status) || 0
+  const description = cleanText(error?.response?.data?.description || error?.message)
+  return httpStatus > 0 && description
+    ? `${httpStatus} ${description}`
+    : description || (httpStatus > 0 ? `HTTP ${httpStatus}` : 'unknown error')
+}
+
+function splitTelegramText(text, maxLength = TELEGRAM_MAX_MESSAGE_LENGTH) {
+  const normalized = cleanMultilineText(text)
+  if (!normalized) return []
+
+  const chunks = []
+  let remaining = normalized
+
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf('\n\n', maxLength)
+    if (splitAt < Math.floor(maxLength * 0.5)) splitAt = remaining.lastIndexOf('\n', maxLength)
+    if (splitAt < Math.floor(maxLength * 0.5)) splitAt = remaining.lastIndexOf(' ', maxLength)
+    if (splitAt < Math.floor(maxLength * 0.5)) splitAt = maxLength
+
+    const chunk = remaining.slice(0, splitAt).trim()
+    if (chunk) chunks.push(chunk)
+    remaining = remaining.slice(splitAt).trimStart()
+  }
+
+  if (remaining) chunks.push(remaining)
+  return chunks
 }
 
 function readEnv() {
@@ -540,6 +578,17 @@ export async function startStandaloneTelegramFreshBot() {
       },
     )
     return response?.data?.result || null
+  }
+
+  async function sendTelegramBroadcast(chatId, text) {
+    const chunks = splitTelegramText(text)
+    if (!chunks.length) return 0
+
+    for (const chunk of chunks) {
+      await sendTelegramMessage(chatId, chunk)
+    }
+
+    return chunks.length
   }
 
   async function deleteTelegramMessage(chatId, messageId) {
@@ -1198,22 +1247,45 @@ export async function startStandaloneTelegramFreshBot() {
       actions: {
         wakeParser: wakeParserLoop,
         broadcast: async (text) => {
-          const sessions = stateStore.getAllSessions().filter((s) => s.isActive)
+          const sessions = stateStore.getAllSessions()
+          const targets = []
+          const seenChatIds = new Set()
+
+          for (const session of sessions) {
+            const chatId = normalizeChatId(session?.chatId)
+            if (!chatId || seenChatIds.has(chatId)) continue
+            seenChatIds.add(chatId)
+            targets.push({ ...session, chatId })
+          }
+
           let sent = 0
           let failed = 0
-          for (const s of sessions) {
+          let deactivated = 0
+          let firstError = ''
+
+          for (const s of targets) {
             try {
-              await sendTelegramMessage(s.chatId, text)
+              await sendTelegramBroadcast(s.chatId, text)
               sent += 1
             } catch (error) {
               failed += 1
+              const errorText = getTelegramErrorText(error)
+              if (!firstError) firstError = `chat ${s.chatId}: ${errorText}`
+              console.warn(`ADMIN_BROADCAST_FAILED | chat_id=${s.chatId} | ${errorText}`)
               if (shouldDeactivateChat(error)) {
                 stateStore.deactivateSession(s.chatId)
+                deactivated += 1
               }
             }
           }
           await stateStore.flush()
-          return { sent, failed }
+          return {
+            sent,
+            failed,
+            total: targets.length,
+            deactivated,
+            firstError,
+          }
         },
       },
     })
