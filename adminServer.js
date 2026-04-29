@@ -1290,6 +1290,7 @@ function buildUserRecord(session, deliveredCount) {
 
 export function startAdminServer({ stateStore, logBuffer, env, actions = {} } = {}) {
   const password = cleanText(env?.ADMIN_PASSWORD || env?.ADMIN_PANEL_PASSWORD || 'encar5628')
+  const apiToken = cleanText(env?.ADMIN_API_TOKEN || env?.ENCAR_ADMIN_TOKEN || password)
   const portRaw = Number(env?.ADMIN_PORT || env?.PORT || 3000)
   const port = Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 3000
   const sessionTtlMs = Number(env?.ADMIN_SESSION_TTL_MS) || DEFAULT_SESSION_TTL_MS
@@ -1321,13 +1322,23 @@ export function startAdminServer({ stateStore, logBuffer, env, actions = {} } = 
     return true
   }
 
+  function isApiTokenAuthed(req) {
+    const headerToken = cleanText(req.headers['x-admin-token'] || '')
+    const authHeader = cleanText(req.headers.authorization || '')
+    const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+      ? cleanText(authHeader.slice(7))
+      : ''
+    const token = headerToken || bearerToken
+    return Boolean(apiToken && token && timingSafeEqual(token, apiToken))
+  }
+
   function setSessionCookie(res, token, expireNow = false) {
     const maxAge = expireNow ? 0 : Math.floor(sessionTtlMs / 1000)
     res.setHeader('Set-Cookie', `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`)
   }
 
   async function handleApi(req, res, pathname, url) {
-    if (!isAuthed(req)) {
+    if (!isAuthed(req) && !isApiTokenAuthed(req)) {
       return jsonResponse(res, 401, { error: 'unauthorized' })
     }
 
