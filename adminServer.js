@@ -100,6 +100,10 @@ function buildLoginPage(errorText = '') {
     --shadow:0 28px 70px rgba(1,8,18,.55);
   }
   *{box-sizing:border-box}
+  *{scrollbar-width:thin;scrollbar-color:#4b5f78 #101822}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:#101822;border-radius:999px}
+  ::-webkit-scrollbar-thumb{background:#44546a;border-radius:999px;border:2px solid #101822}
   body{
     margin:0;
     min-height:100vh;
@@ -211,7 +215,178 @@ function buildLoginPage(errorText = '') {
     <h2>Вход в панель</h2>
     ${errHtml}
     <label class="field">
-      <input type="password" name="password" placeholder="Введите пароль" autofocus required/>
+      <input type="password" name="password" placeholder="Введите пароль" autocomplete="current-password" autofocus required/>
+    </label>
+    <button class="submit" type="submit">Войти</button>
+  </form>
+</body>
+</html>`
+}
+
+function buildRedesignedLoginPage(errorText = '') {
+  const errHtml = errorText
+    ? `<div class="login-alert">${String(errorText).replace(/</g, '&lt;')}</div>`
+    : ''
+  return `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ENCAR BOT CONTROL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23141c27'/%3E%3Cpath d='M16 6l8 4v5c0 5-3.2 9-8 11-4.8-2-8-6-8-11v-5l8-4z' fill='%2370a7ff'/%3E%3C/svg%3E"/>
+<style>
+  :root{
+    --bg:#0b111a;
+    --panel:#141c27;
+    --panel-soft:#101822;
+    --line:#273343;
+    --text:#eef4fb;
+    --muted:#8998aa;
+    --blue:#70a7ff;
+    --red:#f05252;
+    --shadow:0 22px 70px rgba(0,0,0,.34);
+  }
+  *{box-sizing:border-box}
+  *{scrollbar-width:thin;scrollbar-color:#4b5f78 #101822}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:#101822;border-radius:999px}
+  ::-webkit-scrollbar-thumb{background:#44546a;border-radius:999px;border:2px solid #101822}
+  body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+    color:var(--text);
+    font-family:Inter,"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    background:#0b111a;
+  }
+  .login-card{
+    width:min(430px,100%);
+    padding:28px;
+    border:1px solid var(--line);
+    border-radius:16px;
+    background:var(--panel);
+    box-shadow:var(--shadow);
+  }
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin-bottom:24px;
+  }
+  .brand-mark{
+    display:grid;
+    place-items:center;
+    width:42px;
+    height:42px;
+    border-radius:12px;
+    color:var(--blue);
+    border:1px solid rgba(112,167,255,.26);
+    background:rgba(112,167,255,.1);
+  }
+  .brand strong{
+    display:block;
+    font-size:15px;
+    letter-spacing:.08em;
+  }
+  .brand span{
+    display:block;
+    margin-top:3px;
+    color:var(--muted);
+    font-size:13px;
+  }
+  h1{
+    margin:0 0 8px;
+    font-size:28px;
+    line-height:1.08;
+    letter-spacing:0;
+  }
+  p{
+    margin:0 0 22px;
+    color:var(--muted);
+    line-height:1.55;
+    font-size:14px;
+  }
+  .field{
+    display:grid;
+    gap:8px;
+    margin-bottom:16px;
+  }
+  .field span{
+    color:#cbd6e2;
+    font-size:13px;
+    font-weight:700;
+  }
+  input{
+    width:100%;
+    height:48px;
+    padding:0 14px;
+    border-radius:10px;
+    border:1px solid var(--line);
+    background:var(--panel-soft);
+    color:var(--text);
+    font-size:15px;
+    outline:none;
+    transition:border-color .18s ease, box-shadow .18s ease;
+  }
+  input:focus{
+    border-color:rgba(112,167,255,.72);
+    box-shadow:0 0 0 4px rgba(112,167,255,.12);
+  }
+  .login-alert{
+    padding:12px 14px;
+    margin-bottom:16px;
+    border-radius:10px;
+    border:1px solid rgba(240,82,82,.32);
+    background:rgba(240,82,82,.1);
+    color:#fecaca;
+    font-size:13px;
+  }
+  .submit{
+    width:100%;
+    height:48px;
+    border:1px solid rgba(112,167,255,.24);
+    border-radius:10px;
+    background:#223047;
+    color:#eef4fb;
+    font-size:15px;
+    font-weight:800;
+    cursor:pointer;
+    transition:background .18s ease, border-color .18s ease, transform .18s ease;
+  }
+  .submit:hover{
+    background:#2a3b56;
+    border-color:rgba(112,167,255,.36);
+    transform:translateY(-1px);
+  }
+  @media (max-width:640px){
+    body{padding:16px}
+    .login-card{padding:22px;border-radius:14px}
+  }
+</style>
+</head>
+<body>
+  <form class="login-card" method="POST" action="/admin/login">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3l7 3v5c0 4.5-2.9 8.4-7 10-4.1-1.6-7-5.5-7-10V6l7-3z"/>
+          <path d="M9 12l2 2 4-5"/>
+        </svg>
+      </div>
+      <div>
+        <strong>ENCAR BOT CONTROL</strong>
+        <span>secure admin access</span>
+      </div>
+    </div>
+    <h1>Вход в панель</h1>
+    <p>Введите пароль администратора, чтобы открыть мониторинг и ручное управление ботом.</p>
+    ${errHtml}
+    <label class="field">
+      <span>Пароль</span>
+      <input type="password" name="password" placeholder="Введите пароль" autocomplete="current-password" autofocus required/>
     </label>
     <button class="submit" type="submit">Войти</button>
   </form>
@@ -1238,6 +1413,586 @@ setInterval(loadStats, 5000)
 </body>
 </html>`
 
+const REDESIGNED_DASHBOARD_HTML = `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ENCAR BOT CONTROL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23141c27'/%3E%3Cpath d='M16 6l8 4v5c0 5-3.2 9-8 11-4.8-2-8-6-8-11v-5l8-4z' fill='%2370a7ff'/%3E%3C/svg%3E"/>
+<style>
+  :root{
+    --bg:#0b111a;
+    --bg-soft:#0f1722;
+    --panel:#141c27;
+    --panel-2:#111923;
+    --line:#273343;
+    --line-soft:rgba(148,163,184,.14);
+    --text:#f3f6fb;
+    --muted:#9aa8ba;
+    --muted-2:#748296;
+    --blue:#70a7ff;
+    --blue-soft:rgba(112,167,255,.12);
+    --green:#4ade80;
+    --green-soft:rgba(74,222,128,.12);
+    --red:#f05252;
+    --red-soft:rgba(240,82,82,.1);
+    --shadow:0 18px 44px rgba(0,0,0,.28);
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  *{scrollbar-width:thin;scrollbar-color:#4b5f78 #101822}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:#101822;border-radius:999px}
+  ::-webkit-scrollbar-thumb{background:#44546a;border-radius:999px;border:2px solid #101822}
+  html{background:var(--bg)}
+  body{
+    margin:0;
+    min-height:100vh;
+    color:var(--text);
+    font-family:"Inter","Segoe UI",Arial,sans-serif;
+    background:
+      radial-gradient(circle at 20% 0%, rgba(67,98,142,.16), transparent 34%),
+      linear-gradient(180deg,#0c131d 0%,#090f17 100%);
+    letter-spacing:0;
+    overflow-x:hidden;
+  }
+  button,.btn{
+    appearance:none;
+    border:1px solid var(--line);
+    background:#111a26;
+    color:var(--text);
+    border-radius:8px;
+    padding:10px 16px;
+    min-height:42px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:9px;
+    font:inherit;
+    font-weight:700;
+    cursor:pointer;
+    text-decoration:none;
+    transition:background .16s ease,border-color .16s ease,transform .16s ease;
+  }
+  button:hover,.btn:hover{background:#172232;border-color:#3a4a60}
+  button:active,.btn:active{transform:translateY(1px)}
+  button.danger{
+    color:#ffb4b4;
+    background:var(--red-soft);
+    border-color:rgba(240,82,82,.72);
+  }
+  button.danger:hover{background:rgba(240,82,82,.16)}
+  button.primary{background:#162336;border-color:#334862;color:#d7e8ff}
+  button.small{min-height:34px;padding:7px 13px;font-size:13px}
+  .shell{width:min(1500px,calc(100% - 64px));margin:0 auto;padding:30px 0 26px}
+  .topbar{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:24px;
+    margin-bottom:24px;
+  }
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:11px;
+    color:#e8edf5;
+    font-size:14px;
+    font-weight:800;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .shield{
+    width:25px;
+    height:25px;
+    display:grid;
+    place-items:center;
+    color:var(--blue);
+  }
+  .page-title{
+    display:flex;
+    align-items:center;
+    gap:18px;
+    margin-top:24px;
+    flex-wrap:wrap;
+  }
+  h1{
+    margin:0;
+    font-size:42px;
+    line-height:1;
+    font-weight:850;
+    letter-spacing:0;
+  }
+  .online{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    height:37px;
+    padding:0 14px;
+    border-radius:7px;
+    border:1px solid rgba(74,222,128,.2);
+    color:#bdf7d0;
+    background:rgba(74,222,128,.08);
+    font-weight:700;
+  }
+  .online::before{
+    content:"";
+    width:9px;
+    height:9px;
+    border-radius:999px;
+    background:var(--green);
+  }
+  .subline{
+    margin:18px 0 0;
+    color:var(--muted);
+    font-size:15px;
+  }
+  .top-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+  .icon{width:20px;height:20px;display:inline-block}
+  .kpi-grid{
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:16px;
+    margin-bottom:18px;
+  }
+  .card{
+    background:linear-gradient(180deg,rgba(22,31,43,.96),rgba(17,25,35,.96));
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+  .kpi{
+    min-height:136px;
+    display:grid;
+    grid-template-columns:76px 1fr;
+    align-items:center;
+    gap:18px;
+    padding:22px;
+  }
+  .kpi-icon,.bottom-icon{
+    width:68px;
+    height:68px;
+    border-radius:999px;
+    display:grid;
+    place-items:center;
+    background:#222b39;
+    color:var(--blue);
+  }
+  .kpi-icon.green{background:rgba(74,222,128,.13);color:var(--green)}
+  .kpi-label{color:#d7dde7;font-size:15px;margin-bottom:8px}
+  .kpi-value{font-size:36px;font-weight:850;line-height:1;color:#fff}
+  .kpi-note{margin-top:9px;color:var(--muted);font-size:13px;line-height:1.35}
+  .layout{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 405px;
+    gap:22px;
+    align-items:start;
+  }
+  .layout > *,
+  .right-stack,
+  .section-card,
+  .mini-card,
+  .table-wrap{min-width:0}
+  .section-card{padding:22px}
+  .section-head{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:14px;
+    margin-bottom:20px;
+  }
+  .section-title{
+    display:flex;
+    align-items:center;
+    gap:13px;
+    margin:0;
+    font-size:22px;
+    line-height:1.2;
+    font-weight:800;
+  }
+  .section-desc{margin:16px 0 0;color:var(--muted);font-size:14px;line-height:1.55}
+  .count-pill{
+    min-width:77px;
+    height:36px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:7px;
+    border:1px solid rgba(112,167,255,.26);
+    background:var(--blue-soft);
+    color:#8bbaff;
+    font-weight:800;
+  }
+  .table-wrap{
+    overflow:auto;
+    border:1px solid var(--line);
+    border-radius:8px;
+    background:#111924;
+  }
+  table{
+    width:100%;
+    min-width:940px;
+    border-collapse:collapse;
+    font-size:14px;
+  }
+  th,td{
+    text-align:left;
+    vertical-align:middle;
+    padding:15px 18px;
+    border-bottom:1px solid var(--line-soft);
+  }
+  th{
+    color:#b8c3d2;
+    font-size:12px;
+    font-weight:800;
+    letter-spacing:.02em;
+    text-transform:uppercase;
+    background:#141d29;
+  }
+  tbody tr:hover td{background:rgba(255,255,255,.018)}
+  tbody tr:last-child td{border-bottom:0}
+  code,.mono{font-family:"Cascadia Code","Consolas",monospace;font-size:13px}
+  .user-name strong{display:block;margin-bottom:4px}
+  .muted{color:var(--muted);font-size:13px;line-height:1.42}
+  .status-badge{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    height:34px;
+    padding:0 11px;
+    border-radius:7px;
+    font-size:13px;
+    font-weight:800;
+  }
+  .status-badge::before{
+    content:"";
+    width:8px;
+    height:8px;
+    border-radius:99px;
+  }
+  .status-badge.on{color:#bdf7d0;background:rgba(74,222,128,.11);border:1px solid rgba(74,222,128,.24)}
+  .status-badge.on::before{background:var(--green)}
+  .status-badge.off{color:#d4dfed;background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.2)}
+  .status-badge.off::before{background:#8090a4}
+  .filters{
+    display:flex;
+    flex-wrap:wrap;
+    gap:7px;
+    max-width:270px;
+  }
+  .chip{
+    display:inline-flex;
+    align-items:center;
+    max-width:260px;
+    height:28px;
+    padding:0 10px;
+    border-radius:7px;
+    background:#182230;
+    border:1px solid var(--line);
+    color:#d9e2ee;
+    font-size:12px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .right-stack{display:grid;gap:16px}
+  .mini-card{padding:22px}
+  .mini-title{
+    display:flex;
+    align-items:center;
+    gap:13px;
+    margin:0 0 16px;
+    font-size:21px;
+    font-weight:800;
+  }
+  .metric-list{
+    border:1px solid var(--line);
+    border-radius:8px;
+    overflow:hidden;
+    background:#111924;
+  }
+  .metric-row{
+    min-height:48px;
+    display:grid;
+    grid-template-columns:28px 1fr auto;
+    align-items:center;
+    gap:10px;
+    padding:0 14px;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .metric-row:last-child{border-bottom:0}
+  .metric-label{color:#d4dbe6}
+  .metric-value{font-size:18px;color:#fff}
+  .bottom-card{
+    margin-top:18px;
+    display:grid;
+    grid-template-columns:auto 1fr repeat(3,210px);
+    gap:24px;
+    align-items:center;
+    padding:20px 22px;
+  }
+  .bottom-icon{width:62px;height:62px}
+  .bottom-title{margin:0 0 10px;font-size:22px;font-weight:800}
+  .bottom-desc{margin:0;color:var(--muted);line-height:1.5;font-size:14px}
+  .bottom-metric{
+    min-height:72px;
+    padding-left:24px;
+    border-left:1px solid var(--line);
+  }
+  .bottom-metric span{display:block;color:#c5cfdd;font-size:14px;margin-bottom:10px}
+  .bottom-metric strong{display:block;font-size:24px;line-height:1;color:#fff}
+  .bottom-metric small{display:block;margin-top:8px;color:var(--muted);font-size:12px}
+  .empty{
+    padding:54px 24px;
+    text-align:center;
+    color:var(--muted);
+  }
+  .empty strong{display:block;color:#fff;font-size:18px;margin-bottom:8px}
+  @media (max-width:1180px){
+    .layout{grid-template-columns:1fr}
+    .right-stack{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .bottom-card{grid-template-columns:auto 1fr;align-items:start}
+    .bottom-metric{border-left:0;border-top:1px solid var(--line);padding:18px 0 0}
+  }
+  @media (max-width:860px){
+    .shell{width:min(100% - 28px,1500px);padding-top:20px}
+    .topbar{display:grid}
+    .top-actions{justify-content:flex-start}
+    h1{font-size:34px}
+    .kpi-grid,.right-stack{grid-template-columns:1fr}
+    .kpi{grid-template-columns:58px 1fr;padding:18px}
+    .kpi-icon{width:54px;height:54px}
+    .section-card,.mini-card{padding:18px}
+    .bottom-card{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div>
+      <div class="brand">
+        <span class="shield">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-2.9 8.5-7 10-4.1-1.5-7-5.5-7-10V6l7-3z" stroke="currentColor" stroke-width="1.8"/></svg>
+        </span>
+        ENCAR BOT CONTROL
+      </div>
+      <div class="page-title">
+        <h1>Админ-панель</h1>
+        <span class="online">Online</span>
+      </div>
+      <p class="subline" id="status-line">Последнее обновление: — • активных пользователей: —</p>
+    </div>
+    <div class="top-actions">
+      <button class="primary" type="button" onclick="refreshAll()">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Обновить
+      </button>
+      <a class="btn" href="/admin/logout">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Выйти
+      </a>
+    </div>
+  </header>
+
+  <section class="kpi-grid" id="kpi-grid"></section>
+
+  <section class="layout">
+    <article class="card section-card">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Сессии и ручное управление
+          </h2>
+          <p class="section-desc">Смотри, кто сейчас активен, какие фильтры висят на пользователях и кому нужно вручную включить или остановить парсинг.</p>
+        </div>
+        <span class="count-pill" id="users-count">— всего</span>
+      </div>
+      <div id="users-table"></div>
+    </article>
+
+    <aside class="right-stack">
+      <article class="card mini-card">
+        <h2 class="mini-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16zM3.3 7L12 12l8.7-5M12 22V12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Состояние системы
+        </h2>
+        <div class="metric-list" id="system-list"></div>
+      </article>
+      <article class="card mini-card">
+        <h2 class="mini-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 2l-2 2M7.5 11.5a5 5 0 1 1 5 5L10 19H7v3H4v-3H2v-3l5.5-4.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Ключи и VIN
+        </h2>
+        <div class="metric-list" id="keys-list"></div>
+      </article>
+    </aside>
+  </section>
+
+  <section class="card bottom-card">
+    <div class="bottom-icon">
+      <svg viewBox="0 0 24 24" width="29" height="29" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div>
+      <h2 class="bottom-title">Мониторинг Encar Bot</h2>
+      <p class="bottom-desc">Пользователи, фильтры, доставки и ручные действия собраны в одном интерфейсе без визуального мусора и времёнок.</p>
+    </div>
+    <div class="bottom-metric">
+      <span>Текущий uptime</span>
+      <strong id="bottom-uptime">—</strong>
+    </div>
+    <div class="bottom-metric">
+      <span>Активных фильтров</span>
+      <strong id="bottom-filters">—</strong>
+      <small>в работе или ожидании</small>
+    </div>
+    <div class="bottom-metric">
+      <span>Seen + VIN</span>
+      <strong id="bottom-seen">—</strong>
+      <small id="bottom-seen-note">ключей и VIN в памяти</small>
+    </div>
+  </section>
+</div>
+
+<script>
+let latestStats = null
+let latestUsers = []
+
+function esc(value){
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'})[ch]
+  })
+}
+function fmtNum(value){
+  const n = Number(value)
+  return Number.isFinite(n) ? new Intl.NumberFormat('ru-RU').format(n) : '0'
+}
+function fmtDate(value){
+  if(!value) return '—'
+  const d = new Date(value)
+  if(!Number.isFinite(d.getTime())) return '—'
+  return d.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'})
+}
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({credentials:'same-origin'}, opts || {}))
+  if (r.status === 401){ location.href = '/admin/login'; return null }
+  return r.json()
+}
+function iconSvg(kind){
+  const icons = {
+    users:'<svg viewBox="0 0 24 24" width="31" height="31" fill="none"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    active:'<svg viewBox="0 0 24 24" width="31" height="31" fill="none"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M7 8l2 2 4-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    scan:'<svg viewBox="0 0 24 24" width="31" height="31" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    shield:'<svg viewBox="0 0 24 24" width="31" height="31" fill="none"><path d="M12 3l7 3v5c0 4.5-2.9 8.5-7 10-4.1-1.5-7-5.5-7-10V6l7-3z" stroke="currentColor" stroke-width="1.8"/></svg>'
+  }
+  return icons[kind] || icons.shield
+}
+function metricIcon(label){
+  const short = String(label || '').trim().slice(0,1).toUpperCase() || '•'
+  return '<span class="muted mono">' + esc(short) + '</span>'
+}
+function renderKpis(s){
+  const cards = [
+    {label:'Пользователи', value:s.users.total, note:'Всего зарегистрированных сессий', icon:'users'},
+    {label:'Активные', value:s.users.active, note:'Сейчас участвуют в парсинге', icon:'active', green:true},
+    {label:'Сканирования', value:s.globalStats.totalScans, note:'Полные циклы обхода', icon:'scan'},
+    {label:'Проверено', value:s.globalStats.totalListingsChecked, note:'Объявлений прошло через фильтры', icon:'shield'}
+  ]
+  document.getElementById('kpi-grid').innerHTML = cards.map(function(card){
+    return '<article class="card kpi"><div class="kpi-icon '+(card.green ? 'green' : '')+'">'+iconSvg(card.icon)+'</div><div><div class="kpi-label">'+esc(card.label)+'</div><div class="kpi-value">'+fmtNum(card.value)+'</div><div class="kpi-note">'+esc(card.note)+'</div></div></article>'
+  }).join('')
+}
+function renderMetricList(id, rows){
+  document.getElementById(id).innerHTML = rows.map(function(row){
+    return '<div class="metric-row"><div>'+metricIcon(row.label)+'</div><div class="metric-label">'+esc(row.label)+'</div><div class="metric-value">'+esc(row.value)+'</div></div>'
+  }).join('')
+}
+function renderStats(s){
+  latestStats = s
+  renderKpis(s)
+  document.getElementById('status-line').textContent = 'Последнее обновление: ' + new Date().toLocaleString('ru-RU') + ' • активных пользователей: ' + fmtNum(s.users.active)
+  renderMetricList('system-list', [
+    {label:'Фильтры', value:fmtNum(s.users.totalFilters)},
+    {label:'Доставки', value:fmtNum(s.globalStats.totalDelivered)},
+    {label:'Страницы', value:fmtNum(s.globalStats.totalPages)},
+    {label:'Seen Listings', value:fmtNum(s.seen.total)}
+  ])
+  renderMetricList('keys-list', [
+    {label:'VIN в памяти', value:fmtNum(s.seen.vinsTracked)},
+    {label:'Uptime', value:s.uptime || '—'}
+  ])
+  document.getElementById('bottom-uptime').textContent = s.uptime || '—'
+  document.getElementById('bottom-filters').textContent = fmtNum(s.users.totalFilters)
+  document.getElementById('bottom-seen').textContent = fmtNum(s.seen.total + s.seen.vinsTracked)
+  document.getElementById('bottom-seen-note').textContent = fmtNum(s.seen.total) + ' ключей и ' + fmtNum(s.seen.vinsTracked) + ' VIN в памяти'
+}
+function filtersHtml(user){
+  if(user.filterSummary) return '<span class="chip" title="'+esc(user.filterSummary)+'">'+esc(user.filterSummary)+'</span>'
+  const filters = Array.isArray(user.filters) ? user.filters : []
+  if(!filters.length) return '<span class="muted">Фильтров пока нет</span>'
+  return '<div class="filters">'+filters.slice(0,3).map(function(filter){
+    const label = filter.label || filter.key || 'filter'
+    return '<span class="chip" title="'+esc(label)+'">'+esc(label)+'</span>'
+  }).join('')+(filters.length > 3 ? '<span class="chip">+'+fmtNum(filters.length - 3)+'</span>' : '')+'</div>'
+}
+function renderUsers(users){
+  latestUsers = users || []
+  const activeUsers = latestUsers.filter(function(user){ return user.isActive }).length
+  document.getElementById('users-count').textContent = fmtNum(latestUsers.length) + ' всего'
+  if(!latestUsers.length){
+    document.getElementById('users-table').innerHTML = '<div class="empty"><strong>Пользователей пока нет</strong>Когда бот создаст первые сессии, они появятся здесь.</div>'
+    return
+  }
+  const rows = latestUsers.map(function(user){
+    const name = [user.firstName,user.lastName].filter(Boolean).join(' ') || (user.username ? '@'+user.username : '—')
+    const status = user.isActive ? '<span class="status-badge on">Активен</span>' : '<span class="status-badge off">Пауза</span>'
+    const action = user.isActive
+      ? '<button class="danger small" data-action="stop" data-chat="'+esc(user.chatId)+'">Остановить</button>'
+      : '<button class="small" data-action="start" data-chat="'+esc(user.chatId)+'">Запустить</button>'
+    return '<tr><td><code>'+esc(user.chatId)+'</code></td><td class="user-name"><strong>'+esc(name)+'</strong>'+(user.username ? '<div class="muted">@'+esc(user.username)+'</div>' : '')+'<div class="muted">'+esc(user.parseScope || 'Все машины')+'</div></td><td>'+status+'</td><td>'+filtersHtml(user)+'</td><td class="muted">'+fmtDate(user.updatedAt)+'</td><td>'+fmtNum(user.deliveredCount)+'</td><td>'+action+'</td></tr>'
+  }).join('')
+  document.getElementById('users-table').innerHTML = '<div class="table-wrap"><table><thead><tr><th>CHAT_ID</th><th>Имя</th><th>Статус</th><th>Фильтры</th><th>Обновлено</th><th>Доставлено</th><th>Действия</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+  if(latestStats){
+    document.getElementById('status-line').textContent = 'Последнее обновление: ' + new Date().toLocaleString('ru-RU') + ' • активных пользователей: ' + fmtNum(activeUsers)
+  }
+}
+async function loadStats(){
+  const s = await api('/admin/api/stats')
+  if(!s) return
+  renderStats(s)
+}
+async function loadUsers(){
+  const d = await api('/admin/api/users')
+  if(!d) return
+  renderUsers(d.users || [])
+}
+async function refreshAll(){
+  await Promise.all([loadStats(), loadUsers()])
+}
+async function stopUser(chatId){
+  if(!confirm('Остановить парсинг у '+chatId+'?')) return
+  await api('/admin/api/user/'+encodeURIComponent(chatId)+'/stop', {method:'POST'})
+  await refreshAll()
+}
+async function startUser(chatId){
+  await api('/admin/api/user/'+encodeURIComponent(chatId)+'/start', {method:'POST'})
+  await refreshAll()
+}
+document.getElementById('users-table').addEventListener('click', function(event){
+  const button = event.target.closest('button[data-action][data-chat]')
+  if(!button) return
+  const chatId = button.dataset.chat
+  if(button.dataset.action === 'stop') stopUser(chatId)
+  if(button.dataset.action === 'start') startUser(chatId)
+})
+refreshAll()
+setInterval(loadStats, 5000)
+</script>
+</body>
+</html>`
+
 function formatUptime(startedAt) {
   const startMs = new Date(startedAt).getTime()
   if (!Number.isFinite(startMs)) return '—'
@@ -1471,7 +2226,7 @@ export function startAdminServer({ stateStore, logBuffer, env, actions = {} } = 
 
       if (pathname === '/' || pathname === '/admin' || pathname === '/admin/') {
         if (isAuthed(req)) {
-          return htmlResponse(res, 200, DASHBOARD_HTML)
+          return htmlResponse(res, 200, REDESIGNED_DASHBOARD_HTML)
         }
         res.writeHead(302, { Location: '/admin/login' })
         return res.end()
@@ -1482,7 +2237,7 @@ export function startAdminServer({ stateStore, logBuffer, env, actions = {} } = 
           res.writeHead(302, { Location: '/admin' })
           return res.end()
         }
-        return htmlResponse(res, 200, buildLoginPage())
+        return htmlResponse(res, 200, buildRedesignedLoginPage())
       }
 
       if (pathname === '/admin/login' && req.method === 'POST') {
@@ -1490,7 +2245,7 @@ export function startAdminServer({ stateStore, logBuffer, env, actions = {} } = 
         const params = new URLSearchParams(body)
         const given = params.get('password') || ''
         if (!timingSafeEqual(given, password)) {
-          return htmlResponse(res, 401, buildLoginPage('Неверный пароль'))
+          return htmlResponse(res, 401, buildRedesignedLoginPage('Неверный пароль'))
         }
         const token = issueToken()
         setSessionCookie(res, token)
