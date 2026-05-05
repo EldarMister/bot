@@ -344,7 +344,7 @@ function buildBrandSelectionsLines(session = {}) {
   }
 
   return [
-    '🏷️ Выбранные марки:',
+    '🏷️ Выбранные периоды:',
     ...selections.map((selection, index) => `${index + 1}. ${getBrandSelectionLabel(selection)}`),
   ]
 }

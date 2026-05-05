@@ -733,9 +733,22 @@ export function getFilterSummary(session = {}) {
   const customFilters = normalizeCustomFilters(session?.customFilters, session?.customFilterUrl, session?.customFilterQuery)
 
   const parts = []
-  if (brandSelections.length) parts.push(`Марки: ${brandSelections.length}`)
+  if (brandSelections.length) {
+    // Group by brand and count unique brands
+    const counts = new Map()
+    for (const sel of brandSelections) {
+      const key = normalizeBrandKey(sel?.brandKey)
+      const preset = getBrandPreset(key)
+      const label = preset?.label || key || 'Марка'
+      counts.set(label, (counts.get(label) || 0) + 1)
+    }
+    const brandPart = [...counts.entries()]
+      .map(([label, n]) => (n > 1 ? `${label} × ${n}` : label))
+      .join(', ')
+    parts.push(brandPart)
+  }
   if (customFilters.length) parts.push(`Ссылки: ${customFilters.length}`)
-  if (parts.length) return parts.join(', ')
+  if (parts.length) return parts.join(' | ')
 
   return getScopeLabel(normalizeParseScope(session?.parseScope))
 }
