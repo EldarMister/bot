@@ -896,10 +896,48 @@ function matchesParseScope(listing, parseScope) {
   return true
 }
 
-function matchesSessionFilter(listing, filterEntry = {}) {
+function matchesBrandYearMonth(listing, filterEntry, raw) {
+  const expectedYear = Number(filterEntry?.year) || 0
+  if (!expectedYear) return true // no year constraint
+
+  // Try to extract a 6-digit yearMonth (YYYYMM) from raw or listing.year
+  const rawYearStr = cleanText(raw?.Year || '')
+  const listingYear = Number(listing?.year) || 0
+
+  // First check the 4-digit model year
+  if (listingYear && listingYear !== expectedYear) return false
+
+  // If we have a 6-digit code (YYYYMM) and a month constraint, verify the month
+  const expectedMonth = Number(filterEntry?.month) || 0
+  if (expectedMonth) {
+    if (rawYearStr.length >= 6) {
+      const ym = rawYearStr.slice(0, 6)
+      const yyyy = Number(ym.slice(0, 4))
+      const mm = Number(ym.slice(4, 6))
+      if (yyyy === expectedYear && mm > 0) {
+        return mm === expectedMonth
+      }
+    }
+    // If month info is missing in raw, fall back to FormYear
+    const formYearStr = cleanText(raw?.FormYear || '')
+    if (formYearStr.length >= 6) {
+      const fy = Number(formYearStr.slice(0, 4))
+      const fm = Number(formYearStr.slice(4, 6))
+      if (fy === expectedYear && fm > 0) return fm === expectedMonth
+    }
+    // Can't verify month — accept (safer than rejecting valid cars)
+    return true
+  }
+
+  return true
+}
+
+function matchesSessionFilter(listing, filterEntry = {}, raw = {}) {
   const filterMode = normalizeFilterMode(filterEntry?.filterMode)
   if (filterMode === FILTER_MODE_BRAND) {
-    return matchesBrandPreset(listing, filterEntry?.brandKey)
+    if (!matchesBrandPreset(listing, filterEntry?.brandKey)) return false
+    if (!matchesBrandYearMonth(listing, filterEntry, raw)) return false
+    return true
   }
   if (filterMode === FILTER_MODE_CUSTOM) {
     const query = cleanText(filterEntry?.query)
@@ -930,6 +968,8 @@ function buildFilterGroups(sessions = []) {
         filterMode: normalizeFilterMode(filterEntry?.filterMode),
         parseScope: normalizeParseScope(filterEntry?.parseScope),
         brandKey: cleanText(filterEntry?.brandKey),
+        year: Number(filterEntry?.year) || 0,
+        month: Number(filterEntry?.month) || 0,
         label: cleanText(filterEntry?.label),
         sessions: [],
         chatIds: [],
@@ -1686,7 +1726,7 @@ export function createStandaloneEncarClient(env = {}) {
           fuelType: normalizeFuel(raw?.FuelType),
         }
 
-        if (!matchesSessionFilter(rawListing, currentGroup)) {
+        if (!matchesSessionFilter(rawListing, currentGroup, raw)) {
           stats.filtered += 1
           stateStore.rememberListing(listingStateKey, { qualifiesFresh: false })
           continue
