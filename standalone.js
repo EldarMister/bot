@@ -44,6 +44,8 @@ const BUTTON_FILTERS = '🎯 Фильтры'
 const BUTTON_BRAND_FILTERS = '🏷️ Фильтр по марке'
 const BUTTON_CUSTOM_FILTER = '🔗 Свой фильтр'
 const BUTTON_ADD_LINK = '➕ Добавить ссылку'
+const BUTTON_MANAGE_FILTERS = '🗑 Удалить фильтры'
+const BUTTON_DELETE_ALL_FILTERS = '🗑 Удалить все'
 const BUTTON_BACK = '⬅️ Назад'
 
 const KEYBOARD_SECTION_MAIN = 'main'
@@ -52,6 +54,7 @@ const KEYBOARD_SECTION_BRANDS = 'brands'
 const KEYBOARD_SECTION_BRAND_YEARS = 'brand_years'
 const KEYBOARD_SECTION_BRAND_MONTHS = 'brand_months'
 const KEYBOARD_SECTION_CUSTOM = 'custom'
+const KEYBOARD_SECTION_MANAGE = 'manage'
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
@@ -169,20 +172,41 @@ function getCustomFilterButtonLabel(session = {}) {
     : BUTTON_CUSTOM_FILTER
 }
 
-function getDeleteLinkButtonLabel(index) {
-  return `🗑 ${index}`
+function truncateLabel(text, maxLen = 40) {
+  const value = cleanText(text)
+  if (value.length <= maxLen) return value
+  return `${value.slice(0, maxLen - 1)}…`
+}
+
+function getDeleteLinkButtonLabel(index, label = '') {
+  const trimmed = truncateLabel(label, 40)
+  return trimmed ? `🗑 ${index}. ${trimmed}` : `🗑 ${index}`
 }
 
 function parseDeleteLinkButton(text) {
-  const match = cleanText(text).match(/^🗑\s*(\d+)$/u)
+  const match = cleanText(text).match(/^🗑\s*(\d+)(?:[.\s].*)?$/u)
   if (!match) return 0
   const parsed = Number.parseInt(match[1], 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
-function getDeleteFilterButtons(session = {}) {
-  const total = getSessionBrandSelections(session).length + getSessionCustomFilters(session).length
-  return Array.from({ length: total }, (_, i) => getDeleteLinkButtonLabel(i + 1))
+function getManageFilterButtons(session = {}) {
+  const brands = getSessionBrandSelections(session)
+  const customs = getSessionCustomFilters(session)
+  const buttons = []
+  brands.forEach((sel, idx) => {
+    buttons.push(getDeleteLinkButtonLabel(idx + 1, getBrandSelectionLabel(sel)))
+  })
+  customs.forEach((filter, idx) => {
+    const total = brands.length + idx + 1
+    const label = cleanText(filter?.url) || cleanText(filter?.query) || 'свой'
+    buttons.push(getDeleteLinkButtonLabel(total, label))
+  })
+  return buttons
+}
+
+function hasAnyFilter(session = {}) {
+  return getSessionBrandSelections(session).length > 0 || getSessionCustomFilters(session).length > 0
 }
 
 function parseYearButton(text) {
@@ -228,11 +252,27 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   const toggleButtonLabel = isActive ? BUTTON_STOP : BUTTON_START
 
   if (section === KEYBOARD_SECTION_FILTERS) {
+    const rows = [
+      [{ text: getBrandFiltersButtonLabel(session) }, { text: getCustomFilterButtonLabel(session) }],
+    ]
+    if (hasAnyFilter(session)) {
+      rows.push([{ text: BUTTON_MANAGE_FILTERS }])
+    }
+    rows.push([{ text: BUTTON_BACK }])
     return {
-      keyboard: [
-        [{ text: getBrandFiltersButtonLabel(session) }, { text: getCustomFilterButtonLabel(session) }],
-        [{ text: BUTTON_BACK }],
-      ],
+      keyboard: rows,
+      resize_keyboard: true,
+      one_time_keyboard: false,
+    }
+  }
+
+  if (section === KEYBOARD_SECTION_MANAGE) {
+    const buttons = getManageFilterButtons(session)
+    const rows = buildButtonRows(buttons, 1) // one filter per row for full-width labels
+    if (buttons.length > 1) rows.push([{ text: BUTTON_DELETE_ALL_FILTERS }])
+    rows.push([{ text: BUTTON_BACK }])
+    return {
+      keyboard: rows,
       resize_keyboard: true,
       one_time_keyboard: false,
     }
@@ -275,13 +315,9 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
   }
 
   if (section === KEYBOARD_SECTION_CUSTOM) {
-    const deleteButtons = getSessionCustomFilters(session)
-      .map((_, index) => getDeleteLinkButtonLabel(index + 1))
-
     return {
       keyboard: [
         [{ text: BUTTON_ADD_LINK }],
-        ...buildButtonRows(deleteButtons, 3),
         [{ text: BUTTON_BACK }],
       ],
       resize_keyboard: true,
@@ -289,14 +325,12 @@ function buildControlKeyboard(session = null, section = KEYBOARD_SECTION_MAIN) {
     }
   }
 
-  const hasFilters = getSessionBrandSelections(session).length > 0 || getSessionCustomFilters(session).length > 0
-  const filtersButtonLabel = hasFilters ? `✅ ${BUTTON_FILTERS}` : BUTTON_FILTERS
+  const filtersButtonLabel = hasAnyFilter(session) ? `✅ ${BUTTON_FILTERS}` : BUTTON_FILTERS
 
   return {
     keyboard: [
       [{ text: toggleButtonLabel }],
       [{ text: BUTTON_STATUS }, { text: filtersButtonLabel }],
-      ...buildButtonRows(getDeleteFilterButtons(session), 3),
     ],
     resize_keyboard: true,
     one_time_keyboard: false,
@@ -352,10 +386,39 @@ function buildStatusText(session) {
   }
 
   lines.push('', `🔘 Действие: ${isActive ? BUTTON_STOP : BUTTON_START}`)
-  if (getDeleteFilterButtons(session).length) {
-    lines.push('', '🗑 Удаление фильтров: кнопки ниже.')
+  if (hasAnyFilter(session)) {
+    lines.push('', '💡 Чтобы удалить фильтры — Фильтры → Удалить фильтры.')
   }
 
+  return lines.join('\n')
+}
+
+function buildManageFiltersText(session) {
+  const brands = getSessionBrandSelections(session)
+  const customs = getSessionCustomFilters(session)
+  if (!brands.length && !customs.length) {
+    return '🗑 Нет фильтров для удаления.'
+  }
+
+  const lines = ['🗑 Управление фильтрами', '', 'Нажмите на нужный фильтр чтобы удалить его:']
+  let idx = 0
+  if (brands.length) {
+    lines.push('', '🏷️ Марки:')
+    for (const sel of brands) {
+      idx += 1
+      lines.push(`  ${idx}. ${getBrandSelectionLabel(sel)}`)
+    }
+  }
+  if (customs.length) {
+    lines.push('', '🔗 Свои ссылки:')
+    for (const filter of customs) {
+      idx += 1
+      lines.push(`  ${idx}. ${truncateLabel(filter?.url || filter?.query || '', 60)}`)
+    }
+  }
+  if (brands.length + customs.length > 1) {
+    lines.push('', `Или нажмите «${BUTTON_DELETE_ALL_FILTERS}» чтобы стереть всё.`)
+  }
   return lines.join('\n')
 }
 
@@ -755,6 +818,40 @@ export async function startStandaloneTelegramFreshBot() {
       return
     }
 
+    if (text === BUTTON_MANAGE_FILTERS) {
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        currentSection: KEYBOARD_SECTION_MANAGE,
+        awaitingCustomFilter: false,
+      })
+      await stateStore.flush()
+      await respondWithControl(message, buildManageFiltersText(session), session, KEYBOARD_SECTION_MANAGE)
+      return
+    }
+
+    if (text === BUTTON_DELETE_ALL_FILTERS) {
+      const session = stateStore.upsertSession(chatId, {
+        ...commonUserFields,
+        filterMode: FILTER_MODE_SCOPE,
+        brandSelections: [],
+        customFilters: [],
+        brandKey: '',
+        customFilterUrl: '',
+        customFilterQuery: '',
+        currentSection: KEYBOARD_SECTION_FILTERS,
+        awaitingCustomFilter: false,
+      })
+      await stateStore.flush()
+      wakeParserLoop()
+      await respondWithControl(
+        message,
+        ['🗑 Все фильтры удалены.', '', buildFiltersText(session)].join('\n'),
+        session,
+        KEYBOARD_SECTION_FILTERS,
+      )
+      return
+    }
+
     if (text === BUTTON_BRAND_FILTERS) {
       const session = stateStore.upsertSession(chatId, {
         ...commonUserFields,
@@ -909,7 +1006,11 @@ export async function startStandaloneTelegramFreshBot() {
         return
       }
 
-      if (currentSession?.currentSection === KEYBOARD_SECTION_BRANDS || currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM) {
+      if (
+        currentSession?.currentSection === KEYBOARD_SECTION_BRANDS
+        || currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
+        || currentSession?.currentSection === KEYBOARD_SECTION_MANAGE
+      ) {
         const session = stateStore.upsertSession(chatId, {
           ...commonUserFields,
           currentSection: KEYBOARD_SECTION_FILTERS,
@@ -934,87 +1035,52 @@ export async function startStandaloneTelegramFreshBot() {
       return
     }
 
-    if (deleteCustomIndex > 0) {
+    if (deleteCustomIndex > 0 && currentSession?.currentSection === KEYBOARD_SECTION_MANAGE) {
       const currentBrands = getSessionBrandSelections(currentSession)
       const currentCustomFilters = getSessionCustomFilters(currentSession)
-      const isInCustomSection = currentSession?.currentSection === KEYBOARD_SECTION_CUSTOM
-
-      if (isInCustomSection && deleteCustomIndex <= currentCustomFilters.length) {
-        // В разделе свои ссылки: кнопки 1..M удаляют только свои фильтры
-        const nextCustomFilters = currentCustomFilters.filter((_, index) => index !== deleteCustomIndex - 1)
-        const nextFilterMode = nextCustomFilters.length
-          ? FILTER_MODE_CUSTOM
-          : currentBrands.length ? FILTER_MODE_BRAND : FILTER_MODE_SCOPE
-
-        const session = stateStore.upsertSession(chatId, {
-          ...commonUserFields,
-          filterMode: nextFilterMode,
-          customFilters: nextCustomFilters,
-          currentSection: KEYBOARD_SECTION_CUSTOM,
-          awaitingCustomFilter: false,
-          customFilterUrl: nextCustomFilters.at(-1)?.url || '',
-          customFilterQuery: nextCustomFilters.at(-1)?.query || '',
-        })
-        await stateStore.flush()
-        wakeParserLoop()
-        await respondWithControl(
-          message,
-          [`🗑 Ссылка ${deleteCustomIndex} удалена.`, '', buildCustomFilterText(session)].join('\n'),
-          session,
-          KEYBOARD_SECTION_CUSTOM,
-        )
-        return
-      }
-
-      // На главном экране: кнопки 1..N идут по маркам, затем N+1..N+M по своим ссылкам
       const total = currentBrands.length + currentCustomFilters.length
-      if (!isInCustomSection && deleteCustomIndex <= total) {
-        if (deleteCustomIndex <= currentBrands.length) {
-          const nextBrands = currentBrands.filter((_, index) => index !== deleteCustomIndex - 1)
-          const nextFilterMode = nextBrands.length
-            ? FILTER_MODE_BRAND
-            : currentCustomFilters.length ? FILTER_MODE_CUSTOM : FILTER_MODE_SCOPE
 
-          const session = stateStore.upsertSession(chatId, {
-            ...commonUserFields,
-            filterMode: nextFilterMode,
-            brandSelections: nextBrands,
-            brandKey: nextBrands.at(-1)?.brandKey || '',
-            currentSection: KEYBOARD_SECTION_MAIN,
-          })
-          await stateStore.flush()
-          wakeParserLoop()
-          await respondWithControl(
-            message,
-            [`🗑 Фильтр ${deleteCustomIndex} удалён.`, '', buildStatusText(session)].join('\n'),
-            session,
-            KEYBOARD_SECTION_MAIN,
-          )
-          return
+      if (deleteCustomIndex <= total) {
+        let removedLabel = ''
+        let nextBrands = currentBrands
+        let nextCustomFilters = currentCustomFilters
+
+        if (deleteCustomIndex <= currentBrands.length) {
+          const removed = currentBrands[deleteCustomIndex - 1]
+          removedLabel = getBrandSelectionLabel(removed)
+          nextBrands = currentBrands.filter((_, index) => index !== deleteCustomIndex - 1)
+        } else {
+          const customIndex = deleteCustomIndex - currentBrands.length - 1
+          const removed = currentCustomFilters[customIndex]
+          removedLabel = truncateLabel(removed?.url || removed?.query || '', 60)
+          nextCustomFilters = currentCustomFilters.filter((_, index) => index !== customIndex)
         }
 
-        const customIndex = deleteCustomIndex - currentBrands.length - 1
-        const nextCustomFilters = currentCustomFilters.filter((_, index) => index !== customIndex)
-        const nextFilterMode = currentBrands.length
+        const nextFilterMode = nextBrands.length
           ? FILTER_MODE_BRAND
           : nextCustomFilters.length ? FILTER_MODE_CUSTOM : FILTER_MODE_SCOPE
+        const stayInManage = nextBrands.length + nextCustomFilters.length > 0
 
         const session = stateStore.upsertSession(chatId, {
           ...commonUserFields,
           filterMode: nextFilterMode,
+          brandSelections: nextBrands,
           customFilters: nextCustomFilters,
-          currentSection: KEYBOARD_SECTION_MAIN,
-          awaitingCustomFilter: false,
+          brandKey: nextBrands.at(-1)?.brandKey || '',
           customFilterUrl: nextCustomFilters.at(-1)?.url || '',
           customFilterQuery: nextCustomFilters.at(-1)?.query || '',
+          currentSection: stayInManage ? KEYBOARD_SECTION_MANAGE : KEYBOARD_SECTION_FILTERS,
+          awaitingCustomFilter: false,
         })
         await stateStore.flush()
         wakeParserLoop()
+        const headerLine = removedLabel ? `🗑 Удалён: ${removedLabel}` : `🗑 Фильтр ${deleteCustomIndex} удалён.`
+        const bodyText = stayInManage ? buildManageFiltersText(session) : buildFiltersText(session)
         await respondWithControl(
           message,
-          [`🗑 Фильтр ${deleteCustomIndex} удалён.`, '', buildStatusText(session)].join('\n'),
+          [headerLine, '', bodyText].join('\n'),
           session,
-          KEYBOARD_SECTION_MAIN,
+          stayInManage ? KEYBOARD_SECTION_MANAGE : KEYBOARD_SECTION_FILTERS,
         )
         return
       }

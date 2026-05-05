@@ -8,7 +8,7 @@ export const FILTER_MODE_SCOPE = 'scope'
 export const FILTER_MODE_BRAND = 'brand'
 export const FILTER_MODE_CUSTOM = 'custom'
 
-export const BRAND_FILTER_MIN_YEAR = 2010
+export const BRAND_FILTER_MIN_YEAR = 2019
 export const BRAND_FILTER_MAX_YEAR = 2026
 
 export const YEAR_OPTIONS = Object.freeze(
