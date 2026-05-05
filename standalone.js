@@ -44,7 +44,7 @@ const BUTTON_FILTERS = '🎯 Фильтры'
 const BUTTON_BRAND_FILTERS = '🏷️ Фильтр по марке'
 const BUTTON_CUSTOM_FILTER = '🔗 Свой фильтр'
 const BUTTON_ADD_LINK = '➕ Добавить ссылку'
-const BUTTON_MANAGE_FILTERS = '🗑 Удалить фильтры'
+const BUTTON_MANAGE_FILTERS = '📋 Список поисков'
 const BUTTON_DELETE_ALL_FILTERS = '🗑 Удалить все'
 const BUTTON_BACK = '⬅️ Назад'
 
@@ -387,7 +387,7 @@ function buildStatusText(session) {
 
   lines.push('', `🔘 Действие: ${isActive ? BUTTON_STOP : BUTTON_START}`)
   if (hasAnyFilter(session)) {
-    lines.push('', '💡 Чтобы удалить фильтры — Фильтры → Удалить фильтры.')
+    lines.push('', '💡 Список поисков — Фильтры → Список поисков.')
   }
 
   return lines.join('\n')
@@ -400,7 +400,7 @@ function buildManageFiltersText(session) {
     return '🗑 Нет фильтров для удаления.'
   }
 
-  const lines = ['🗑 Управление фильтрами', '', 'Нажмите на нужный фильтр чтобы удалить его:']
+  const lines = ['📋 Список поисков', '', 'Нажмите на нужный поиск чтобы удалить его:']
   let idx = 0
   if (brands.length) {
     lines.push('', '🏷️ Марки:')
